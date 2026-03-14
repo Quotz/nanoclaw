@@ -11,8 +11,8 @@ import { logger } from './logger.js';
 /** The container runtime binary name. */
 export const CONTAINER_RUNTIME_BIN = 'container';
 
-/** Hostname containers use to reach the host machine. */
-export const CONTAINER_HOST_GATEWAY = 'host.docker.internal';
+/** Hostname/IP containers use to reach the host machine. */
+export const CONTAINER_HOST_GATEWAY = '192.168.64.1';
 
 /**
  * Address the credential proxy binds to.
@@ -24,7 +24,8 @@ export const PROXY_BIND_HOST =
   process.env.CREDENTIAL_PROXY_HOST || detectProxyBindHost();
 
 function detectProxyBindHost(): string {
-  if (os.platform() === 'darwin') return '127.0.0.1';
+  // Apple Container VMs reach the host via 192.168.64.1, not loopback
+  if (os.platform() === 'darwin') return '0.0.0.0';
 
   // WSL uses Docker Desktop (same VM routing as macOS) — loopback is correct.
   // Check /proc filesystem, not env vars — WSL_DISTRO_NAME isn't set under systemd.
@@ -42,10 +43,7 @@ function detectProxyBindHost(): string {
 
 /** CLI args needed for the container to resolve the host gateway. */
 export function hostGatewayArgs(): string[] {
-  // On Linux, host.docker.internal isn't built-in — add it explicitly
-  if (os.platform() === 'linux') {
-    return ['--add-host=host.docker.internal:host-gateway'];
-  }
+  // Apple Container doesn't support --add-host; we use the gateway IP directly
   return [];
 }
 
