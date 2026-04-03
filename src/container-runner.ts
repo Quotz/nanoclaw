@@ -78,8 +78,8 @@ function buildVolumeMounts(
       readonly: true,
     });
 
-    // .env shadowing is handled inside the container entrypoint via
-    // mount --bind /dev/null (Apple Container doesn't support file mounts)
+    // .env shadowing is handled inside the container entrypoint via mount --bind
+    // (Apple Container only supports directory mounts, not file mounts like /dev/null)
 
     // Main also gets its group folder as the working directory
     mounts.push({
@@ -215,7 +215,7 @@ function buildVolumeMounts(
   return mounts;
 }
 
-async function buildContainerArgs(
+function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
   isMain: boolean,

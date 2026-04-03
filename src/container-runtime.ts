@@ -3,14 +3,31 @@
  * All runtime-specific logic lives here so swapping runtimes means changing one file.
  */
 import { execSync } from 'child_process';
+import os from 'os';
 
 import { logger } from './logger.js';
 
 /** The container runtime binary name. */
 export const CONTAINER_RUNTIME_BIN = 'container';
 
-/** Hostname/IP containers use to reach the host machine. */
-export const CONTAINER_HOST_GATEWAY = '192.168.64.1';
+/**
+ * IP address containers use to reach the host machine.
+ * Apple Container VMs use a bridge network (192.168.64.x); the host is at the gateway.
+ * Detected from the bridge0 interface, falling back to 192.168.64.1.
+ */
+export const CONTAINER_HOST_GATEWAY = detectHostGateway();
+
+function detectHostGateway(): string {
+  // Apple Container on macOS: containers reach the host via the bridge network gateway
+  const ifaces = os.networkInterfaces();
+  const bridge = ifaces['bridge100'] || ifaces['bridge0'];
+  if (bridge) {
+    const ipv4 = bridge.find((a) => a.family === 'IPv4');
+    if (ipv4) return ipv4.address;
+  }
+  // Fallback: Apple Container's default gateway
+  return '192.168.64.1';
+}
 
 /** CLI args needed for the container to resolve the host gateway. */
 export function hostGatewayArgs(): string[] {
