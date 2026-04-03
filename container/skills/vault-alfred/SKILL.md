@@ -8,6 +8,7 @@ description: Read, write, and search an Obsidian vault knowledge graph via the A
 You have access to an Obsidian vault via the `alfred vault` CLI. The vault is a structured knowledge graph of Markdown files with YAML frontmatter and `[[wikilinks]]` between records.
 
 **Vault location:** `$ALFRED_VAULT_PATH` (mounted at `/workspace/extra/vault`)
+**Schema version:** hand-written baseline (run `sync-alfred-schema.py` on host to auto-generate from installed version)
 
 ## Quick check
 
@@ -171,6 +172,36 @@ CONTENT
 ```
 
 The Curator will pick it up, extract entities (people, projects, decisions), create records, and interlink them.
+
+## Runtime schema introspection
+
+If the record types or statuses listed above seem outdated (e.g., a vault command rejects a type), query Alfred's live schema from inside the container:
+
+```bash
+/opt/alfred/bin/python3 -c "
+from alfred.vault.schema import KNOWN_TYPES, STATUS_BY_TYPE
+import json
+print(json.dumps({
+  'types': sorted(KNOWN_TYPES),
+  'statuses': {k: sorted(v) for k, v in STATUS_BY_TYPE.items()}
+}, indent=2))
+"
+```
+
+This always reflects the installed version of Alfred, regardless of when this skill file was last synced.
+
+To check the installed version:
+
+```bash
+/opt/alfred/bin/python3 -c "from importlib.metadata import version; print(version('alfred-vault'))"
+```
+
+To discover available CLI commands:
+
+```bash
+alfred --help
+alfred vault --help
+```
 
 ## Tips
 

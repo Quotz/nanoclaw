@@ -409,20 +409,87 @@ Ensure Obsidian is pointing at the same vault directory. New files should appear
 
 ## Updating Alfred
 
-Alfred is installed via pip and runs independently of NanoClaw. To update:
+### Automatic update (recommended)
+
+Run the update script — it checks PyPI, upgrades, re-syncs the container skill schema, rebuilds the container, and refreshes per-group skills:
 
 ```bash
+./scripts/update-alfred.sh
+```
+
+Flags:
+- `--check` — check for updates only, don't install
+- `--yes` — auto-approve (non-interactive, good for cron)
+
+### What the update script does
+
+1. **Version check** — compares installed `alfred-vault` against PyPI latest
+2. **Pip upgrade** — installs the new version on the host
+3. **Schema sync** — runs `scripts/sync-alfred-schema.py` which imports Alfred's live schema module and regenerates `container/skills/vault-alfred/SKILL.md` with current record types, statuses, and field definitions
+4. **Container rebuild** — runs `./container/build.sh` to bake the new Alfred version into the container image
+5. **Group refresh** — copies the updated container skill to all per-group skill directories
+
+### Manual update
+
+If you prefer to update step by step:
+
+```bash
+# 1. Upgrade the host package
 pip install --upgrade alfred-vault
+
+# 2. Re-sync the container skill from the new schema
+python3 scripts/sync-alfred-schema.py
+
+# 3. Rebuild the container (gets new pip version inside too)
+./container/build.sh
+
+# 4. Copy updated skill to existing groups
+for dir in data/sessions/*/.claude/skills; do
+  [ -d "$dir" ] && cp -r container/skills/vault-alfred "$dir/"
+done
+
+# 5. Restart the Alfred daemon
+# macOS:
+launchctl kickstart -k gui/$(id -u)/com.alfred-vault
+# Linux:
+systemctl --user restart alfred-vault
+
+# 6. Restart NanoClaw
+# macOS:
+launchctl kickstart -k gui/$(id -u)/com.nanoclaw
+# Linux:
+systemctl --user restart nanoclaw
 ```
 
-Then restart the daemon:
+### Runtime fallback
+
+Even without running the update script, container agents have a runtime fallback. The container skill includes Python introspection commands that query Alfred's installed schema directly:
 
 ```bash
-# macOS
-launchctl kickstart -k gui/$(id -u)/com.alfred-vault
-
-# Linux
-systemctl --user restart alfred-vault
+/opt/alfred/bin/python3 -c "
+from alfred.vault.schema import KNOWN_TYPES, STATUS_BY_TYPE
+import json
+print(json.dumps({'types': sorted(KNOWN_TYPES), 'statuses': {k: sorted(v) for k, v in STATUS_BY_TYPE.items()}}, indent=2))
+"
 ```
 
-No NanoClaw changes needed — the `alfred vault` CLI interface is Alfred's stable public API. Container rebuilds are only needed if Alfred adds new system-level dependencies (rare).
+This means agents always have access to the live schema, even if the SKILL.md reference is outdated. The sync script just keeps the static reference fresh for faster agent startup.
+
+### What survives updates without any action
+
+| Alfred changes... | Impact |
+|---|---|
+| New record types | Agent discovers via runtime introspection; sync script updates static reference |
+| New CLI subcommands | `alfred --help` / `alfred vault --help` always current inside container |
+| Internal refactoring | Zero — we only use CLI |
+| New workers | Zero — Alfred manages its own workers |
+| Config format changes | Alfred's own quickstart handles migration |
+| Schema field changes | Sync script regenerates from live `alfred.vault.schema` module |
+
+### What requires action
+
+| Change | Action needed |
+|---|---|
+| New pip version released | Run `./scripts/update-alfred.sh` |
+| New system dependencies in Alfred | Rebuild container: `./container/build.sh` |
+| Breaking CLI changes | Update container skill (unlikely — would break Alfred's own agents) |
