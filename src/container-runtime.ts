@@ -3,6 +3,7 @@
  * All runtime-specific logic lives here so swapping runtimes means changing one file.
  */
 import { execSync } from 'child_process';
+import fs from 'fs';
 import os from 'os';
 
 import { logger } from './logger.js';
@@ -28,6 +29,15 @@ function detectHostGateway(): string {
   // Fallback: Apple Container's default gateway
   return '192.168.64.1';
 }
+
+/**
+ * Address the credential proxy binds to.
+ * Apple Container VMs reach the host via the bridge network — bind to the
+ * bridge IP so containers can reach it. Never 0.0.0.0 on macOS (would
+ * expose credentials to the local network).
+ */
+export const PROXY_BIND_HOST =
+  process.env.CREDENTIAL_PROXY_HOST || CONTAINER_HOST_GATEWAY;
 
 /** CLI args needed for the container to resolve the host gateway. */
 export function hostGatewayArgs(): string[] {
