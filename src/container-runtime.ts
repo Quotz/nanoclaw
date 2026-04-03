@@ -12,7 +12,6 @@ export const CONTAINER_RUNTIME_BIN = 'container';
 /** Hostname/IP containers use to reach the host machine. */
 export const CONTAINER_HOST_GATEWAY = '192.168.64.1';
 
-
 /** CLI args needed for the container to resolve the host gateway. */
 export function hostGatewayArgs(): string[] {
   // Apple Container doesn't support --add-host; we use the gateway IP directly
