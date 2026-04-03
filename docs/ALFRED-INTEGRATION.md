@@ -380,3 +380,39 @@ This means:
 ### Why the sync script (not pure runtime introspection)
 
 Runtime introspection (`/opt/alfred/bin/python3 -c "from alfred.vault.schema import ..."`) works but costs agent context window tokens every time. The sync script pre-generates a static reference that agents can read immediately, with runtime introspection as a fallback for when the reference is stale.
+
+## Surviving NanoClaw Updates
+
+When users run `/update-nanoclaw` (merging `upstream/main`), our changes need to survive without conflicts. The `skill/alfred` branch is registered in the [skill branch table](skills-as-branches.md) so CI merge-forward keeps it compatible with latest main.
+
+### Conflict-resistance strategy
+
+Every modified file uses the `[skill/alfred]` tag in comments to clearly identify our additions. Changes are structured to minimize merge conflicts:
+
+| File | Strategy | Risk |
+|------|----------|------|
+| `Dockerfile` | **Separate RUN layer** — our Python install is a standalone `RUN` block after the existing `apt-get`. We don't touch the upstream package list. | Low — only conflicts if upstream adds a block at the same insertion point |
+| `config.ts` | **End-of-array + isolated export** — `ALFRED_VAULT_PATH` is appended as the last item in `readEnvFile`. The export is in its own section between `TRIGGER_PATTERN` and timezone, not adjacent to `OLLAMA_ADMIN_TOOLS`. | Low — other skills adding env vars go elsewhere in the array |
+| `container-runner.ts` | **Separate import line + tagged block** — `ALFRED_VAULT_PATH` is imported on its own line (not mixed into the main import block). The env forwarding is a self-contained block with a `[skill/alfred]` comment. | Low — separate import line survives upstream import changes |
+| `.env.example` | **Appended line** — added at the end | Minimal |
+| New files | `container/skills/vault-alfred/`, `.claude/skills/add-alfred/`, `scripts/sync-alfred-schema.py`, `scripts/update-alfred.sh`, `docs/ALFRED-INTEGRATION.md` | None — new files never conflict |
+
+### What happens during `git merge upstream/main`
+
+1. **New files** (container skill, feature skill, scripts, docs) — always merge cleanly, they don't exist on main
+2. **Dockerfile** — our `RUN` layer is a separate block; upstream changes to the existing `apt-get` block don't touch our lines
+3. **config.ts** — our additions are at array boundaries and in isolated sections; upstream adding new env vars typically goes in the middle of the array
+4. **container-runner.ts** — our import is on its own line after the main import block; our env forwarding block is self-contained with clear markers
+
+### If a conflict does occur
+
+The `[skill/alfred]` tags in comments help Claude (or a human) identify which lines belong to this skill during conflict resolution. The intent is always: keep the tagged lines and integrate them with whatever upstream changed.
+
+### CI merge-forward
+
+The GitHub Action that runs on every push to `main` will:
+1. Merge `main` into `skill/alfred`
+2. Run build and tests
+3. Push the updated branch (or open an issue if it fails)
+
+This ensures new users always get a `skill/alfred` branch that's compatible with latest main.

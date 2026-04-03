@@ -520,6 +520,7 @@ Migration from the old skills engine to branches is complete. All feature skills
 | `skill/ollama-tool` | `main` | Ollama MCP server for local models |
 | `skill/apple-container` | `main` | Apple Container runtime |
 | `skill/reactions` | `main` | WhatsApp emoji reactions |
+| `skill/alfred` | `main` | Alfred Obsidian vault integration |
 
 ### What was removed
 

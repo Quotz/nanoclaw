@@ -7,7 +7,6 @@ import fs from 'fs';
 import path from 'path';
 
 import {
-  ALFRED_VAULT_PATH,
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
@@ -18,6 +17,7 @@ import {
   OLLAMA_ADMIN_TOOLS,
   TIMEZONE,
 } from './config.js';
+import { ALFRED_VAULT_PATH } from './config.js'; // [skill/alfred]
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
@@ -231,7 +231,7 @@ function buildContainerArgs(
     args.push('-e', 'OLLAMA_ADMIN_TOOLS=true');
   }
 
-  // Forward Alfred vault path so the container agent can use `alfred vault` CLI
+  // [skill/alfred] Forward vault path so container agent can use `alfred vault` CLI
   if (ALFRED_VAULT_PATH) {
     args.push('-e', `ALFRED_VAULT_PATH=/workspace/extra/vault`);
   }

@@ -11,8 +11,8 @@ const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
   'OLLAMA_ADMIN_TOOLS',
-  'ALFRED_VAULT_PATH',
   'TZ',
+  'ALFRED_VAULT_PATH', // [skill/alfred]
 ]);
 
 export const ASSISTANT_NAME =
@@ -22,8 +22,6 @@ export const ASSISTANT_HAS_OWN_NUMBER =
     envConfig.ASSISTANT_HAS_OWN_NUMBER) === 'true';
 export const OLLAMA_ADMIN_TOOLS =
   (process.env.OLLAMA_ADMIN_TOOLS || envConfig.OLLAMA_ADMIN_TOOLS) === 'true';
-export const ALFRED_VAULT_PATH =
-  process.env.ALFRED_VAULT_PATH || envConfig.ALFRED_VAULT_PATH || '';
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 
@@ -89,6 +87,10 @@ export function getTriggerPattern(trigger?: string): RegExp {
 }
 
 export const TRIGGER_PATTERN = buildTriggerPattern(DEFAULT_TRIGGER);
+
+// [skill/alfred] Obsidian vault path for Alfred integration
+export const ALFRED_VAULT_PATH =
+  process.env.ALFRED_VAULT_PATH || envConfig.ALFRED_VAULT_PATH || '';
 
 // Timezone for scheduled tasks, message formatting, etc.
 // Validates each candidate is a real IANA identifier before accepting.
