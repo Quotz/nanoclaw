@@ -23,7 +23,15 @@ RUN apt-get update && apt-get install -y \
     libxshmfence1 \
     curl \
     git \
+    python3 \
+    python3-pip \
+    python3-venv \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Alfred vault CLI (isolated venv avoids system package conflicts)
+RUN python3 -m venv /opt/alfred && \
+    /opt/alfred/bin/pip install --no-cache-dir alfred-vault && \
+    ln -s /opt/alfred/bin/alfred /usr/local/bin/alfred
 
 # Set Chromium path for agent-browser
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
