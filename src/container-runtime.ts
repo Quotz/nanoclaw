@@ -32,12 +32,12 @@ function detectHostGateway(): string {
 
 /**
  * Address the credential proxy binds to.
- * Apple Container VMs reach the host via the bridge network — bind to the
- * bridge IP so containers can reach it. Never 0.0.0.0 on macOS (would
- * expose credentials to the local network).
+ * Apple Container VMs reach the host via the bridge network (192.168.64.x).
+ * The proxy must bind to 0.0.0.0 so the bridge interface is reachable —
+ * the bridge IP is not a local address the host can bind to directly.
  */
 export const PROXY_BIND_HOST =
-  process.env.CREDENTIAL_PROXY_HOST || CONTAINER_HOST_GATEWAY;
+  process.env.CREDENTIAL_PROXY_HOST || '0.0.0.0';
 
 /** CLI args needed for the container to resolve the host gateway. */
 export function hostGatewayArgs(): string[] {
