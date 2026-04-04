@@ -520,6 +520,7 @@ Migration from the old skills engine to branches is complete. All feature skills
 | `skill/ollama-tool` | `main` | Ollama MCP server for local models |
 | `skill/apple-container` | `main` | Apple Container runtime |
 | `skill/reactions` | `main` | WhatsApp emoji reactions |
+| `skill/epistemic-memory` | `main` | Epistemic memory — weighted belief model of the user |
 
 ### What was removed
 
