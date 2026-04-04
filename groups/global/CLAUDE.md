@@ -40,12 +40,24 @@ Files you create are saved in `/workspace/group/`. Use this for notes, research,
 
 ## Memory
 
-The `conversations/` folder contains searchable history of past conversations. Use this to recall context from previous sessions.
+You have two persistent memory systems:
 
-When you learn something important:
-- Create files for structured data (e.g., `customers.md`, `preferences.md`)
-- Split files larger than 500 lines into folders
-- Keep an index in your memory for the files you create
+### Auto-memory (facts, preferences, project context)
+
+Your memory directory is at `/home/node/.claude/projects/-workspace-group/memory/`. Write and edit files there using the Write and Edit tools. `MEMORY.md` is the index — it's loaded into every session automatically.
+
+When you learn something worth keeping:
+- Add a short entry to `MEMORY.md` (keep it under 200 lines total)
+- For detailed notes, create a topic file (e.g., `projects.md`, `preferences.md`) and link to it from `MEMORY.md`
+- Update or remove entries that are no longer true
+
+### Epistemic memory (beliefs about the user)
+
+The `epistemic-memory` container skill teaches you to maintain weighted beliefs about the user in `/workspace/group/memory/epistemic/`. These beliefs have confidence scores, decay over time, and track contradictions. Use `/mirror` to review what you know about the user.
+
+### Conversation history
+
+The `conversations/` folder contains archived transcripts from past sessions. Search it when you need context from before the current session.
 
 ## Message Formatting
 
