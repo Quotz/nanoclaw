@@ -73,6 +73,8 @@ Session counter reaches next_review_at threshold
 | `scripts/sync-epistemic-memory.sh` | New | Update script: pulls latest upstream, regenerates container skills |
 | `.epistemic-memory-version` | New | Tracks upstream commit hash for update detection |
 | `docs/EPISTEMIC-MEMORY-INTEGRATION.md` | New | This file |
+| `scripts/check-external-updates.sh` | New | Unified checker for all external skill deps (epistemic-memory, alfred) |
+| `.claude/skills/update-skills/SKILL.md` | Modified | Added Step 5: external dependency check after skill branch updates |
 | `docs/skills-as-branches.md` | Modified | Added to skill branch table |
 
 ### Inside container (at runtime)
@@ -135,7 +137,24 @@ Steps:
 6. Updates `.epistemic-memory-version`
 7. Copies updated skills to existing group sessions under `data/sessions/`
 
-### Layer 2: Git commit tracking
+### Layer 2: Unified update check
+
+`scripts/check-external-updates.sh` checks all external skill dependencies in one go:
+
+```bash
+./scripts/check-external-updates.sh          # human-readable
+./scripts/check-external-updates.sh --json   # machine-readable
+```
+
+It checks epistemic-memory (git commit hash) and alfred (pip version) if installed. Exit code = number of updates available (0 = all up to date).
+
+This is integrated into `/update-skills` as Step 5 — after checking skill branches, it automatically checks external deps and offers to apply updates.
+
+### Layer 3: Staleness warning (in-container)
+
+The container skill instructs the agent to check the age of `.epistemic-memory-version` at session start. If it's been 30+ days since the last sync, the agent mentions it once — a passive nudge, not a blocker.
+
+### Layer 4: Git commit tracking
 
 The `.epistemic-memory-version` file stores the upstream commit hash. This is simpler than Alfred's pip version tracking because there's no package manager — the upstream is just a git repo with files.
 
