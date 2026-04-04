@@ -119,10 +119,26 @@ If build fails:
 - Do not refactor unrelated code.
 - If unclear, ask the user.
 
-# Step 5: Summary
+# Step 5: Check external dependencies
+
+After skill branch updates, check for updates to external skill dependencies (upstream repos, pip packages).
+
+Run: `./scripts/check-external-updates.sh`
+
+If updates are available:
+- Show what's outdated and the update command for each
+- Ask the user if they want to apply updates now
+- For each selected dependency, run its sync/update script:
+  - Epistemic memory: `./scripts/sync-epistemic-memory.sh --yes`
+  - Alfred: `./scripts/update-alfred.sh --yes`
+
+If the script doesn't exist (no external deps installed), skip this step silently.
+
+# Step 6: Summary
 
 Show:
 - Skills updated (list)
+- External deps updated (if any)
 - Skills skipped or failed (if any)
 - New HEAD: `git rev-parse --short HEAD`
 - Any conflicts that were resolved (list files)

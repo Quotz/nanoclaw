@@ -163,6 +163,22 @@ If `/workspace/group/memory/epistemic/` doesn't exist or is empty, create:
 
 Start beliefs at low confidence (0.3--0.4) and unknown permanence. Let them earn their way up.
 
+## Staleness Check
+
+At conversation start (after incrementing session counter), check the version file:
+
+```bash
+# Check if the version file exists and its age
+stat /workspace/project/.epistemic-memory-version 2>/dev/null
+```
+
+If the file is **older than 30 days**, mention once at the start of the conversation:
+> "The epistemic memory protocol hasn't been checked for upstream updates in [N] days. Run `/update-skills` or `./scripts/sync-epistemic-memory.sh --check` on the host to check."
+
+Do not repeat this warning in subsequent messages within the same session. Only mention it once.
+
+If the file doesn't exist (not mounted or not main group), skip silently.
+
 ## The Epistemology Evolves
 
 This framework improves over time. Decay rates can be tuned per user. New permanence classes can emerge. The rules for weighting evidence can change. Component 10 of the protocol: treating the epistemology as fixed would be ironic.
