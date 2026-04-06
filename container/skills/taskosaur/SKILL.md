@@ -61,7 +61,7 @@ Requires `title`, `projectId`, and `statusId` (get these from `context`):
 node /home/node/.claude/skills/taskosaur/taskosaur.mjs task-create '{"title":"Fix login bug","projectId":"<id>","statusId":"<id>","priority":"HIGH","description":"Users can't login with SSO"}'
 ```
 
-Optional fields: `type` (default TASK), `priority` (NONE/LOW/MEDIUM/HIGH/URGENT), `description`, `dueDate`, `startDate`, `sprintId`, `assigneeIds`, `parentTaskId`, `storyPoints`.
+Optional fields: `type` (default TASK), `priority` (LOW/MEDIUM/HIGH), `description`, `dueDate`, `startDate`, `sprintId`, `assigneeIds`, `parentTaskId`, `storyPoints`.
 
 ### Update tasks
 

@@ -226,7 +226,11 @@ async function taskCreate(a) {
 async function taskUpdate(a) { const { id, ...rest } = a; return PATCH(`/tasks/${id}`, rest); }
 async function taskSetStatus(a) { return PATCH(`/tasks/${a.id}/status`, { statusId: a.statusId }); }
 async function taskSetPriority(a) { return PATCH(`/tasks/${a.id}/priority`, { priority: a.priority }); }
-async function taskSetDueDate(a) { return PATCH(`/tasks/${a.id}/due-date`, { dueDate: a.dueDate }); }
+async function taskSetDueDate(a) {
+  // API requires ISO datetime — normalize plain dates like "2026-04-10"
+  const d = a.dueDate.includes('T') ? a.dueDate : `${a.dueDate}T00:00:00.000Z`;
+  return PATCH(`/tasks/${a.id}/due-date`, { dueDate: d });
+}
 async function taskSetAssignees(a) { return PATCH(`/tasks/${a.id}/assignees`, { assigneeIds: a.assigneeIds }); }
 async function taskUnassign(a) { return PATCH(`/tasks/${a.id}/unassign`, {}); }
 async function taskDelete(a) { return DEL(`/tasks/${a.id}`); }
