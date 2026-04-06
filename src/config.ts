@@ -11,6 +11,7 @@ const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
   'OLLAMA_ADMIN_TOOLS',
+  'QMD_MCP_PORT',
   'TZ',
   'ALFRED_VAULT_PATH', // [skill/alfred]
   'TASKOSAUR_URL', // [skill/taskosaur]
@@ -67,6 +68,7 @@ export const MAX_MESSAGES_PER_PROMPT = Math.max(
   1,
   parseInt(process.env.MAX_MESSAGES_PER_PROMPT || '10', 10) || 10,
 );
+export const QMD_MCP_PORT = process.env.QMD_MCP_PORT || envConfig.QMD_MCP_PORT;
 export const IPC_POLL_INTERVAL = 1000;
 export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10); // 30min default — how long to keep container alive after last result
 export const MAX_CONCURRENT_CONTAINERS = Math.max(

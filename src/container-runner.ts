@@ -15,6 +15,7 @@ import {
   GROUPS_DIR,
   IDLE_TIMEOUT,
   OLLAMA_ADMIN_TOOLS,
+  QMD_MCP_PORT,
   TIMEZONE,
 } from './config.js';
 import { ALFRED_VAULT_PATH } from './config.js'; // [skill/alfred]
@@ -140,6 +141,17 @@ function buildVolumeMounts(
         2,
       ) + '\n',
     );
+  }
+
+  // Inject QMD MCP server config if QMD is available on the host
+  if (QMD_MCP_PORT) {
+    const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
+    const qmdUrl = `http://${CONTAINER_HOST_GATEWAY}:${QMD_MCP_PORT}/mcp`;
+    settings.mcpServers = settings.mcpServers || {};
+    if (settings.mcpServers.qmd?.url !== qmdUrl) {
+      settings.mcpServers.qmd = { url: qmdUrl };
+      fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n');
+    }
   }
 
   // Sync skills from container/skills/ into each group's .claude/skills/

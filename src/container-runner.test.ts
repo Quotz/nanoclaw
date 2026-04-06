@@ -17,6 +17,7 @@ vi.mock('./config.js', () => ({
   IDLE_TIMEOUT: 1800000, // 30min
   OLLAMA_ADMIN_TOOLS: false,
   ALFRED_VAULT_PATH: '',
+  QMD_MCP_PORT: undefined,
   TIMEZONE: 'America/Los_Angeles',
 }));
 
