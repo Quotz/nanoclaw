@@ -13,6 +13,9 @@ const envConfig = readEnvFile([
   'OLLAMA_ADMIN_TOOLS',
   'TZ',
   'ALFRED_VAULT_PATH', // [skill/alfred]
+  'TASKOSAUR_URL', // [skill/taskosaur]
+  'TASKOSAUR_EMAIL', // [skill/taskosaur]
+  'TASKOSAUR_PASSWORD', // [skill/taskosaur]
 ]);
 
 export const ASSISTANT_NAME =
@@ -91,6 +94,14 @@ export const TRIGGER_PATTERN = buildTriggerPattern(DEFAULT_TRIGGER);
 // [skill/alfred] Obsidian vault path for Alfred integration
 export const ALFRED_VAULT_PATH =
   process.env.ALFRED_VAULT_PATH || envConfig.ALFRED_VAULT_PATH || '';
+
+// [skill/taskosaur] Project management integration
+export const TASKOSAUR_URL =
+  process.env.TASKOSAUR_URL || envConfig.TASKOSAUR_URL || '';
+export const TASKOSAUR_EMAIL =
+  process.env.TASKOSAUR_EMAIL || envConfig.TASKOSAUR_EMAIL || '';
+export const TASKOSAUR_PASSWORD =
+  process.env.TASKOSAUR_PASSWORD || envConfig.TASKOSAUR_PASSWORD || '';
 
 // Timezone for scheduled tasks, message formatting, etc.
 // Validates each candidate is a real IANA identifier before accepting.

@@ -6,7 +6,16 @@ allowed-tools: Bash(node:*)
 
 # Taskosaur — Project Management
 
-Control the Taskosaur instance at `taskosaur.815431624.xyz`. Full CRUD for tasks, projects, sprints, labels, time entries, and more.
+Control the Taskosaur project management instance. Full CRUD for tasks, projects, sprints, labels, time entries, and more.
+
+## Prerequisites
+
+The following env vars must be set in the container (injected automatically by NanoClaw from `.env`):
+- `TASKOSAUR_URL` — API base URL (e.g. `https://taskosaur.example.com/api`)
+- `TASKOSAUR_EMAIL` — bot account email
+- `TASKOSAUR_PASSWORD` — bot account password
+
+If you get "TASKOSAUR_URL not set", the credentials are missing from `.env`.
 
 ## CLI tool
 

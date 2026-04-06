@@ -18,6 +18,7 @@ import {
   TIMEZONE,
 } from './config.js';
 import { ALFRED_VAULT_PATH } from './config.js'; // [skill/alfred]
+import { TASKOSAUR_URL, TASKOSAUR_EMAIL, TASKOSAUR_PASSWORD } from './config.js'; // [skill/taskosaur]
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
@@ -234,6 +235,13 @@ function buildContainerArgs(
   // [skill/alfred] Forward vault path so container agent can use `alfred vault` CLI
   if (ALFRED_VAULT_PATH) {
     args.push('-e', `ALFRED_VAULT_PATH=/workspace/extra/vault`);
+  }
+
+  // [skill/taskosaur] Forward Taskosaur credentials so the container skill can authenticate
+  if (TASKOSAUR_URL) {
+    args.push('-e', `TASKOSAUR_URL=${TASKOSAUR_URL}`);
+    args.push('-e', `TASKOSAUR_EMAIL=${TASKOSAUR_EMAIL}`);
+    args.push('-e', `TASKOSAUR_PASSWORD=${TASKOSAUR_PASSWORD}`);
   }
 
   // Route API traffic through the credential proxy (containers never see real secrets)

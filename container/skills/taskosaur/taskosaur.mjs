@@ -9,10 +9,11 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const BASE_URL = process.env.TASKOSAUR_URL || 'https://taskosaur.815431624.xyz/api';
+const BASE_URL = process.env.TASKOSAUR_URL;
+if (!BASE_URL) { console.error('Error: TASKOSAUR_URL not set'); process.exit(1); }
 const CREDS = {
-  email: process.env.TASKOSAUR_EMAIL || 'nanoclaw@815431624.xyz',
-  password: process.env.TASKOSAUR_PASSWORD || 'nc-ts-k9xP2mQvR7wZ',
+  email: process.env.TASKOSAUR_EMAIL,
+  password: process.env.TASKOSAUR_PASSWORD,
 };
 
 // Token cache in /tmp so it works even when skill dir is readonly
