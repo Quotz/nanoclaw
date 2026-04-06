@@ -465,38 +465,40 @@ async function runAgent(
 
 // --- Post-session knowledge ingestion ---
 // Runs after each successful agent session to keep Alfred and QMD up to date.
-// Fire-and-forget (non-blocking) with throttled QMD re-indexing.
-
-let lastQmdUpdate = 0;
-const QMD_UPDATE_INTERVAL = 10 * 60 * 1000; // 10 minutes
+// Fire-and-forget (non-blocking). Ingestion feeds new content to Alfred,
+// then QMD re-indexes so the next session has fresh search results.
 
 function runPostSessionHooks(): void {
-  const ingestScript = path.join(process.cwd(), 'scripts', 'ingest-to-alfred.sh');
+  const ingestScript = path.join(
+    process.cwd(),
+    'scripts',
+    'ingest-to-alfred.sh',
+  );
 
-  // Alfred ingestion — fast, runs every time
+  // Alfred ingestion, then QMD re-index (sequential: ingest first, index after)
   if (fs.existsSync(ingestScript)) {
     execFile('bash', [ingestScript], (err, stdout, stderr) => {
       if (err) {
         logger.warn({ err: stderr || err.message }, 'Alfred ingestion failed');
-      } else if (stdout.trim()) {
+        return;
+      }
+      if (stdout.trim()) {
         logger.info(stdout.trim(), 'Alfred ingestion');
       }
-    });
-  }
 
-  // QMD re-indexing — throttled to avoid hammering on rapid sessions
-  const now = Date.now();
-  if (now - lastQmdUpdate > QMD_UPDATE_INTERVAL) {
-    lastQmdUpdate = now;
-    execFile('qmd', ['update'], (err, _stdout, stderr) => {
-      if (err) {
-        // QMD not installed or not configured — that's fine, skip silently
-        if (!/ENOENT|not found/i.test(String(err))) {
-          logger.warn({ err: stderr || err.message }, 'QMD update failed');
+      // QMD re-index after ingestion completes
+      execFile('qmd', ['update'], (qmdErr, _stdout, qmdStderr) => {
+        if (qmdErr) {
+          if (!/ENOENT|not found/i.test(String(qmdErr))) {
+            logger.warn(
+              { err: qmdStderr || qmdErr.message },
+              'QMD update failed',
+            );
+          }
+        } else {
+          logger.debug('QMD index updated');
         }
-      } else {
-        logger.debug('QMD index updated');
-      }
+      });
     });
   }
 }
