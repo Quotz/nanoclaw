@@ -17,6 +17,7 @@ import {
   OLLAMA_ADMIN_TOOLS,
   TIMEZONE,
 } from './config.js';
+import { ALFRED_VAULT_PATH } from './config.js'; // [skill/alfred]
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
@@ -228,6 +229,11 @@ function buildContainerArgs(
   // Forward Ollama admin tools flag if enabled
   if (OLLAMA_ADMIN_TOOLS) {
     args.push('-e', 'OLLAMA_ADMIN_TOOLS=true');
+  }
+
+  // [skill/alfred] Forward vault path so container agent can use `alfred vault` CLI
+  if (ALFRED_VAULT_PATH) {
+    args.push('-e', `ALFRED_VAULT_PATH=/workspace/extra/vault`);
   }
 
   // Route API traffic through the credential proxy (containers never see real secrets)

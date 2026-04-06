@@ -25,6 +25,15 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
+# [skill/alfred] Install Python + Alfred vault CLI in isolated venv.
+# Separate RUN layer avoids merge conflicts with upstream apt-get changes.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/alfred \
+    && /opt/alfred/bin/pip install --no-cache-dir alfred-vault \
+    && ln -s /opt/alfred/bin/alfred /usr/local/bin/alfred
+
 # Set Chromium path for agent-browser
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium

@@ -12,6 +12,7 @@ const envConfig = readEnvFile([
   'ASSISTANT_HAS_OWN_NUMBER',
   'OLLAMA_ADMIN_TOOLS',
   'TZ',
+  'ALFRED_VAULT_PATH', // [skill/alfred]
 ]);
 
 export const ASSISTANT_NAME =
@@ -86,6 +87,10 @@ export function getTriggerPattern(trigger?: string): RegExp {
 }
 
 export const TRIGGER_PATTERN = buildTriggerPattern(DEFAULT_TRIGGER);
+
+// [skill/alfred] Obsidian vault path for Alfred integration
+export const ALFRED_VAULT_PATH =
+  process.env.ALFRED_VAULT_PATH || envConfig.ALFRED_VAULT_PATH || '';
 
 // Timezone for scheduled tasks, message formatting, etc.
 // Validates each candidate is a real IANA identifier before accepting.

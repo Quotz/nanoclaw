@@ -521,6 +521,7 @@ Migration from the old skills engine to branches is complete. All feature skills
 | `skill/apple-container` | `main` | Apple Container runtime |
 | `skill/reactions` | `main` | WhatsApp emoji reactions |
 | `skill/epistemic-memory` | `main` | Epistemic memory — weighted belief model of the user |
+| `skill/alfred` | `main` | Alfred Obsidian vault integration |
 
 ### What was removed
 
