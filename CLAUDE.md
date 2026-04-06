@@ -20,6 +20,10 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 | `src/db.ts` | SQLite operations |
 | `groups/{name}/CLAUDE.md` | Per-group memory (isolated) |
 | `container/skills/` | Skills loaded inside agent containers (browser, status, formatting) |
+| `vault/workspace/` | User's Obsidian workspace (work logs, notes) |
+| `vault/knowledge/` | Alfred's structured records (ALFRED_VAULT_PATH) |
+| `scripts/ingest-to-alfred.sh` | Feeds conversations + workspace files to Alfred |
+| `docs/KNOWLEDGE-STACK.md` | Full knowledge/memory architecture |
 
 ## Secrets / Credentials / Proxy (OneCLI)
 
@@ -43,6 +47,8 @@ Four types of skills exist in NanoClaw. See [CONTRIBUTING.md](CONTRIBUTING.md) f
 | `/init-onecli` | Install OneCLI Agent Vault and migrate `.env` credentials to it |
 | `/qodo-pr-resolver` | Fetch and fix Qodo PR review issues interactively or in batch |
 | `/get-qodo-rules` | Load org- and repo-level coding rules from Qodo before code tasks |
+| `/add-alfred` | Set up Alfred vault for structured knowledge processing |
+| `/add-knowledge-search` | Set up QMD hybrid search across all knowledge |
 
 ## Contributing
 
