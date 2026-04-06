@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# [skill/epistemic-memory] Check all external skill dependencies for available updates.
+# Check all external skill dependencies for available updates.
 # Runs non-destructively — only reports, never modifies files.
 #
 # Usage:
@@ -88,15 +88,6 @@ if ! $JSON_MODE; then
 fi
 
 # --- Register all external dependencies here ---
-
-# Epistemic Memory
-if [ -f "$PROJECT_ROOT/.epistemic-memory-version" ] || [ -d "$PROJECT_ROOT/container/skills/epistemic-memory" ]; then
-  check_git_dep \
-    "epistemic-memory" \
-    "https://github.com/rodspeed/epistemic-memory.git" \
-    "$PROJECT_ROOT/.epistemic-memory-version" \
-    "./scripts/sync-epistemic-memory.sh"
-fi
 
 # Alfred (if installed)
 if [ -f "$PROJECT_ROOT/scripts/update-alfred.sh" ]; then

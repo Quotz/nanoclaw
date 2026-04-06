@@ -12,7 +12,6 @@ Five layers, each solving a different problem:
 | **Consolidate** | Auto-dream | Background review/prune/reorganize of memory | Between sessions |
 | **Process** | Alfred | Converts raw inputs into structured knowledge records | Daemon (continuous) |
 | **Search** | QMD | Hybrid retrieval across all knowledge (BM25 + vector + LLM reranking) | Host MCP service |
-| **Believe** | Epistemic memory | Weighted, decaying beliefs about the user specifically | During sessions |
 
 ## Architecture
 
@@ -46,7 +45,6 @@ Five layers, each solving a different problem:
 │                       └──────────┘          │              │        │
 │                                             │  auto-memory │        │
 │                                             │  auto-dream  │        │
-│                                             │  epistemic   │        │
 │                                             └──────────────┘        │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -117,8 +115,7 @@ Obsidian opens `vault/` as the vault root. User writes in `workspace/`, browses 
 3. User asks about past work → agent uses QMD query tool → gets results
 4. Agent needs structured data → uses alfred vault search/list/read
 5. Agent learns something → writes to MEMORY.md (auto-memory)
-6. Agent forms belief about user → writes to epistemic memory
-7. Session ends → auto-dream consolidates memory (between sessions)
+6. Session ends → auto-dream consolidates memory (between sessions)
 ```
 
 ## Component Details
@@ -155,13 +152,6 @@ Obsidian opens `vault/` as the vault root. User writes in `workspace/`, browses 
 - **Integration:** Host-side HTTP MCP server, containers connect via bridge network (same pattern as credential proxy)
 - **Collections:** Obsidian vault, conversation archives, group memory, Alfred vault
 
-### Epistemic memory (user beliefs)
-
-- **What:** Weighted, decaying beliefs about the user (confidence scores, permanence classes)
-- **Container skill:** `container/skills/epistemic-memory/SKILL.md`
-- **Storage:** `groups/{name}/memory/epistemic/`
-- **Docs:** [EPISTEMIC-MEMORY-INTEGRATION.md](EPISTEMIC-MEMORY-INTEGRATION.md)
-
 ### Ingestion pipeline
 
 - **Script:** `scripts/ingest-to-alfred.sh`
@@ -180,7 +170,6 @@ Obsidian opens `vault/` as the vault root. User writes in `workspace/`, browses 
 | `scripts/ingest-to-alfred.sh` | Feeds conversations + workspace files to Alfred inbox |
 | `container/skills/knowledge-search/SKILL.md` | Teaches agent to use QMD MCP tools |
 | `container/skills/vault-alfred/SKILL.md` | Teaches agent to use Alfred vault CLI |
-| `container/skills/epistemic-memory/SKILL.md` | Epistemic memory protocol |
 | `vault/workspace/` | User's Obsidian workspace |
 | `vault/knowledge/` | Alfred's structured records (ALFRED_VAULT_PATH) |
 | `data/ingest-alfred.state` | Tracks which files have been ingested |
@@ -198,12 +187,6 @@ Obsidian opens `vault/` as the vault root. User writes in `workspace/`, browses 
 
 ```bash
 npm update -g @tobilu/qmd
-```
-
-### Epistemic memory
-
-```bash
-./scripts/sync-epistemic-memory.sh   # pull upstream changes
 ```
 
 ### Container image (after any update)
