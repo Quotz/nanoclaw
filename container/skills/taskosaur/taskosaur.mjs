@@ -53,12 +53,20 @@ function saveToken(data) {
 async function getToken() {
   const cached = await loadToken();
   if (cached) return cached;
-  const res = await fetch(`${BASE_URL}/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(CREDS),
-  });
-  if (!res.ok) throw new Error(`Login failed: ${res.status} ${await res.text()}`);
+  if (!CREDS.email || !CREDS.password) {
+    throw new Error('TASKOSAUR_EMAIL and TASKOSAUR_PASSWORD must be set');
+  }
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(CREDS),
+    });
+  } catch (e) {
+    throw new Error(`Cannot reach Taskosaur at ${BASE_URL}: ${e.message}`);
+  }
+  if (!res.ok) throw new Error(`Login failed (${res.status}): ${await res.text()}. Check TASKOSAUR_EMAIL and TASKOSAUR_PASSWORD.`);
   const data = await res.json();
   saveToken(data);
   return data.access_token;
@@ -68,13 +76,22 @@ async function getToken() {
 
 async function api(method, endpoint, body) {
   const token = await getToken();
-  const res = await fetch(`${BASE_URL}${endpoint}`, {
-    method,
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}${endpoint}`, {
+      method,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) {
+    throw new Error(`Network error: ${e.message} (${method} ${endpoint}). Check TASKOSAUR_URL and network connectivity.`);
+  }
   const text = await res.text();
-  if (!res.ok) throw new Error(`API ${method} ${endpoint} → ${res.status}: ${text}`);
+  if (!res.ok) {
+    let detail = text;
+    try { detail = JSON.parse(text).message || text; } catch {}
+    throw new Error(`API ${method} ${endpoint} → ${res.status}: ${detail}${body ? `\nRequest body: ${JSON.stringify(body)}` : ''}`);
+  }
   return text ? JSON.parse(text) : null;
 }
 
@@ -360,6 +377,7 @@ try {
   const result = await ACTIONS[action](args);
   console.log(JSON.stringify(result, null, 2));
 } catch (e) {
-  console.error('Error:', e.message);
+  console.error(`Error running "${action}":\n  ${e.message}`);
+  if (args && Object.keys(args).length) console.error(`  Args: ${JSON.stringify(args)}`);
   process.exit(1);
 }
