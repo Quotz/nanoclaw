@@ -19,7 +19,11 @@ import {
   TIMEZONE,
 } from './config.js';
 import { ALFRED_VAULT_PATH } from './config.js'; // [skill/alfred]
-import { TASKOSAUR_URL, TASKOSAUR_EMAIL, TASKOSAUR_PASSWORD } from './config.js'; // [skill/taskosaur]
+import {
+  TASKOSAUR_URL,
+  TASKOSAUR_EMAIL,
+  TASKOSAUR_PASSWORD,
+} from './config.js'; // [skill/taskosaur]
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
@@ -136,6 +140,9 @@ function buildVolumeMounts(
             // https://code.claude.com/docs/en/memory#manage-auto-memory
             CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
           },
+          // Background memory consolidation between sessions
+          // Reviews, prunes, and reorganizes memory files automatically
+          autoDreamEnabled: true,
         },
         null,
         2,
