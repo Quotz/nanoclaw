@@ -1,3 +1,4 @@
+import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -452,10 +453,51 @@ async function runAgent(
       return 'error';
     }
 
+    // Post-session: ingest new content into Alfred + refresh QMD index
+    runPostSessionHooks();
+
     return 'success';
   } catch (err) {
     logger.error({ group: group.name, err }, 'Agent error');
     return 'error';
+  }
+}
+
+// --- Post-session knowledge ingestion ---
+// Runs after each successful agent session to keep Alfred and QMD up to date.
+// Fire-and-forget (non-blocking) with throttled QMD re-indexing.
+
+let lastQmdUpdate = 0;
+const QMD_UPDATE_INTERVAL = 10 * 60 * 1000; // 10 minutes
+
+function runPostSessionHooks(): void {
+  const ingestScript = path.join(process.cwd(), 'scripts', 'ingest-to-alfred.sh');
+
+  // Alfred ingestion — fast, runs every time
+  if (fs.existsSync(ingestScript)) {
+    execFile('bash', [ingestScript], (err, stdout, stderr) => {
+      if (err) {
+        logger.warn({ err: stderr || err.message }, 'Alfred ingestion failed');
+      } else if (stdout.trim()) {
+        logger.info(stdout.trim(), 'Alfred ingestion');
+      }
+    });
+  }
+
+  // QMD re-indexing — throttled to avoid hammering on rapid sessions
+  const now = Date.now();
+  if (now - lastQmdUpdate > QMD_UPDATE_INTERVAL) {
+    lastQmdUpdate = now;
+    execFile('qmd', ['update'], (err, _stdout, stderr) => {
+      if (err) {
+        // QMD not installed or not configured — that's fine, skip silently
+        if (!/ENOENT|not found/i.test(String(err))) {
+          logger.warn({ err: stderr || err.message }, 'QMD update failed');
+        }
+      } else {
+        logger.debug('QMD index updated');
+      }
+    });
   }
 }
 
