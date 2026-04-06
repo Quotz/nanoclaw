@@ -18,6 +18,9 @@ vi.mock('./config.js', () => ({
   OLLAMA_ADMIN_TOOLS: false,
   ALFRED_VAULT_PATH: '',
   QMD_MCP_PORT: undefined,
+  TASKOSAUR_URL: '',
+  TASKOSAUR_EMAIL: '',
+  TASKOSAUR_PASSWORD: '',
   TIMEZONE: 'America/Los_Angeles',
 }));
 
