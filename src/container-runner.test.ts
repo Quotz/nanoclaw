@@ -21,6 +21,7 @@ vi.mock('./config.js', () => ({
   TASKOSAUR_URL: '',
   TASKOSAUR_EMAIL: '',
   TASKOSAUR_PASSWORD: '',
+  TICKTICK_BEARER_TOKEN: '',
   TIMEZONE: 'America/Los_Angeles',
 }));
 

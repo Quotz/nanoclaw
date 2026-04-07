@@ -17,6 +17,7 @@ const envConfig = readEnvFile([
   'TASKOSAUR_URL', // [skill/taskosaur]
   'TASKOSAUR_EMAIL', // [skill/taskosaur]
   'TASKOSAUR_PASSWORD', // [skill/taskosaur]
+  'TICKTICK_BEARER_TOKEN', // [skill/ticktick]
 ]);
 
 export const ASSISTANT_NAME =
@@ -104,6 +105,10 @@ export const TASKOSAUR_EMAIL =
   process.env.TASKOSAUR_EMAIL || envConfig.TASKOSAUR_EMAIL || '';
 export const TASKOSAUR_PASSWORD =
   process.env.TASKOSAUR_PASSWORD || envConfig.TASKOSAUR_PASSWORD || '';
+
+// [skill/ticktick] TickTick hosted MCP server (https://mcp.ticktick.com)
+export const TICKTICK_BEARER_TOKEN =
+  process.env.TICKTICK_BEARER_TOKEN || envConfig.TICKTICK_BEARER_TOKEN || '';
 
 // Timezone for scheduled tasks, message formatting, etc.
 // Validates each candidate is a real IANA identifier before accepting.
