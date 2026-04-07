@@ -24,6 +24,7 @@ import {
   TASKOSAUR_EMAIL,
   TASKOSAUR_PASSWORD,
 } from './config.js'; // [skill/taskosaur]
+import { TICKTICK_BEARER_TOKEN } from './config.js'; // [skill/ticktick]
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
@@ -157,6 +158,28 @@ function buildVolumeMounts(
     settings.mcpServers = settings.mcpServers || {};
     if (settings.mcpServers.qmd?.url !== qmdUrl) {
       settings.mcpServers.qmd = { url: qmdUrl };
+      fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n');
+    }
+  }
+
+  // [skill/ticktick] Inject TickTick hosted MCP server config if bearer token is set.
+  // TickTick runs the MCP server at https://mcp.ticktick.com using Streamable HTTP.
+  // `type: 'http'` is REQUIRED for HTTP MCP servers in the SDK's discriminated union.
+  if (TICKTICK_BEARER_TOKEN) {
+    const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
+    settings.mcpServers = settings.mcpServers || {};
+    const desired = {
+      type: 'http' as const,
+      url: 'https://mcp.ticktick.com',
+      headers: { Authorization: `Bearer ${TICKTICK_BEARER_TOKEN}` },
+    };
+    const existing = settings.mcpServers.ticktick;
+    if (
+      existing?.type !== desired.type ||
+      existing?.url !== desired.url ||
+      existing?.headers?.Authorization !== desired.headers.Authorization
+    ) {
+      settings.mcpServers.ticktick = desired;
       fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n');
     }
   }
