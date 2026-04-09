@@ -1,266 +1,662 @@
-# Cog-Native Memory — Architecture Deep-Dive
+# Cog-Native Memory — Complete Reference
 
-NanoClaw's structured memory layer is adapted from [marciopuga/cog](https://github.com/marciopuga/cog). This document explains how Cog's conventions map onto NanoClaw's filesystem, how each maintenance skill works, and how to customize the rules.
+NanoClaw's structured memory layer is adapted from [marciopuga/cog](https://github.com/marciopuga/cog). This document is the definitive reference for how it works, how to maintain it, and how to keep it up to date with upstream Cog.
 
-## What Cog Is (and Isn't)
+**Other docs:**
+- `docs/KNOWLEDGE-STACK.md` — high-level four-layer architecture (auto-memory / auto-dream / Cog / QMD)
+- `vault/memory/CONVENTIONS.md` — the in-vault conventions file the agent reads at session start
 
-**Cog is a set of conventions, not code.** The original project ships:
+---
+
+## What Cog Is
+
+Cog is a set of **conventions, not code**. The original project (`marciopuga/cog`) ships:
 - A `CLAUDE.md` file defining how memory is structured and maintained
-- A `.claude/commands/` directory of slash-command prompts that tell Claude what to do during each maintenance phase
+- A `.claude/commands/*.md` directory of slash-command prompts
 - A seed `memory/` directory that grows from conversations
 
-That's the whole thing. No Python, no daemon, no pip package. The "workers" are prompts Claude reads when you type a slash command.
+There is no application code, no Python, no daemon, no pip package. The "workers" are prompts Claude reads when you invoke a skill. The filesystem is the database.
 
-NanoClaw adapts this model by:
+NanoClaw adapts this by:
 1. Putting the conventions in `vault/memory/CONVENTIONS.md`
-2. Putting the slash-command prompts in `container/skills/memory-*/SKILL.md`
-3. Creating the seed `vault/memory/` directory during `/add-cog-memory`
-4. Adding a post-session hook that runs `scripts/ingest-to-memory.sh` to append new observations automatically
+2. Putting the commands in `container/skills/memory-*/SKILL.md` (10 skills)
+3. Adding `scripts/ingest-to-memory.sh` for automatic post-session observation appending
+4. Adding time-gated maintenance hooks in `src/index.ts` so reflect/housekeeping/evolve run automatically
+5. Keeping QMD as the search layer (Cog uses grep; we have both)
 
-## Three-Tier Memory Model
+---
+
+## Architecture Overview
 
 ```
-Hot                  — Loaded every conversation, <50 lines each, rewrite freely
-Warm (domain files)  — Loaded when a domain skill activates, per-file size limits
-Glacier              — YAML-frontmattered archives, indexed via glacier/index.md
+User conversation → NanoClaw container agent
+                         │
+                         ├── reads vault/memory/CONVENTIONS.md (rules)
+                         ├── reads vault/memory/hot-memory.md (cross-domain state)
+                         ├── reads vault/memory/cog-meta/patterns.md (universal rules)
+                         ├── queries QMD for fuzzy search across all collections
+                         ├── greps vault/memory/ for exact matches
+                         ├── follows [[wiki-links]] between files
+                         └── writes back: observations, entities, action-items, hot-memory
+                         
+Session ends → runPostSessionHooks() fires:
+  1. scripts/ingest-to-memory.sh   (appends observations from transcripts + workspace)
+  2. qmd update                     (re-indexes all collections)
+  3. runMaintenanceIfDue()           (reflect/housekeeping/evolve if interval elapsed)
 ```
 
-Each tier has a rule for when content moves:
+---
 
-| Rule | Trigger | Result |
-|---|---|---|
-| Pattern heating up | 3+ observations on same theme | Distill into `patterns.md` (via `/memory-reflect`) |
-| Pattern cooling off | No references in 2+ weeks | Remove from `hot-memory.md` (via `/memory-reflect`) |
-| File getting bloated | `observations.md` >50 entries | Archive oldest by tag (via `/memory-housekeeping`) |
-| Entity going dormant | `last:` date >6 months ago | Move to `entities-inactive.md` glacier |
-| Topic recurring | Topic in 3+ observations across 2+ weeks | Suggest raising a thread (via `/memory-reflect`) |
-
-## Directory Map
+## Full Directory Map
 
 ```
 vault/memory/
-├── CONVENTIONS.md            # Rules (read at session start)
-├── hot-memory.md             # Cross-domain top-level, <50 lines
-├── link-index.md             # Auto-generated backlink index
-├── personal/                 # Default domain
-│   ├── hot-memory.md
-│   ├── observations.md       # Append-only event log
-│   ├── action-items.md
-│   ├── entities.md
-│   └── threads/              # Raised topics
-├── work/
-│   └── {project}/            # One per active project
+├── CONVENTIONS.md                 ← The rulebook (read by agent every session)
+├── domains.yml                    ← Domain registry — SSOT for all domains
+├── hot-memory.md                  ← Cross-domain top-level (<50 lines, always loaded)
+├── link-index.md                  ← Backlink index (auto-generated by /memory-housekeeping)
+│
+├── personal/                      ← Default domain
+│   ├── hot-memory.md              ← Domain hot (<50 lines)
+│   ├── observations.md            ← Append-only event log
+│   ├── action-items.md            ← Tasks with due dates and priorities
+│   ├── entities.md                ← People, places, things (3-line stubs)
+│   ├── calendar.md                ← Events, appointments, recurring schedules
+│   ├── health.md                  ← Health facts + history
+│   ├── habits.md                  ← Habit tracking + patterns
+│   ├── philosophy.md              ← Values, principles
+│   ├── home.md                    ← Home management
+│   ├── patterns.md                ← Domain-specific rules (satellite, soft cap 30 lines)
+│   ├── INDEX.md                   ← Auto-generated by /memory-housekeeping
+│   └── threads/                   ← Zettelkasten — one file per raised topic
+│       └── {topic-slug}.md        ← Current State / Timeline / Insights spine
+│
+├── work/                          ← Work domains (one per active project)
+│   └── nanoclaw/                  ← Example: NanoClaw development
 │       ├── hot-memory.md
 │       ├── observations.md
 │       ├── action-items.md
 │       ├── entities.md
+│       ├── dev-log.md             ← Technical log (builds, deploys, incidents)
+│       ├── projects.md            ← Active + completed project tracking
+│       ├── patterns.md            ← Domain-specific rules (satellite)
+│       ├── INDEX.md               ← Auto-generated
 │       └── threads/
-├── glacier/                  # Archived data by domain
-│   ├── index.md              # Auto-generated catalog
-│   └── {domain}/
-│       └── {archive-files}.md
-└── cog-meta/                 # System-level memory
-    ├── hot-memory.md
-    ├── self-observations.md  # What worked/didn't (agent's self-log)
-    ├── patterns.md           # Universal rules distilled from self-obs
-    ├── improvements.md
-    └── scenarios/
+│
+├── glacier/                       ← Cold storage (archived data)
+│   ├── index.md                   ← Glacier catalog (auto-generated)
+│   └── {domain}/                  ← Archives organized by domain
+│       └── {archive-files}.md     ← YAML-frontmattered archive files
+│
+└── cog-meta/                      ← System-level memory (self-observation, architecture)
+    ├── hot-memory.md              ← System state, recent audit findings
+    ├── self-observations.md       ← What worked/didn't (agent self-log, append-only)
+    ├── patterns.md                ← Universal rules (HARD LIMIT 70 lines / 5.5KB)
+    ├── improvements.md            ← Wishlist, repair notes
+    ├── reflect-cursor.md          ← Session transcript ingestion cursor
+    ├── briefing-bridge.md         ← Housekeeping → foresight data handoff
+    ├── foresight-nudge.md         ← Today's strategic nudge (overwritten each run)
+    ├── evolve-log.md              ← /memory-evolve run log + next-run priorities
+    ├── evolve-observations.md     ← Architectural issues (append-only)
+    ├── scorecard.md               ← Memory health metrics (overwritten each run)
+    ├── scenario-calibration.md    ← Scenario accuracy tracking
+    └── scenarios/                 ← Active decision simulations
+        └── {slug}.md              ← One file per scenario
 ```
+
+**File ownership rule:** Each file is owned by a specific skill that writes to it. Other skills may read it but should not edit it. See the "File Ownership" section below.
+
+---
+
+## Domains (domains.yml)
+
+`vault/memory/domains.yml` is the **single source of truth** for all registered domains. Every skill that routes conversations or lists domains reads this file.
+
+```yaml
+domains:
+  personal:
+    label: "Personal — family, health, calendar, day-to-day"
+    type: personal
+    path: personal
+    triggers: [...]
+    files: [hot-memory.md, observations.md, ...]
+    skill: memory-personal
+
+  nanoclaw:
+    label: "NanoClaw — agent platform development"
+    type: work
+    path: work/nanoclaw
+    triggers: [...]
+    files: [hot-memory.md, observations.md, dev-log.md, ...]
+    skill: null   # uses generic domain routing
+```
+
+**Adding a new domain:** Ask Andy to "add a domain" or invoke `/memory-setup`. The setup skill has a conversational flow that asks about the domain, appends to `domains.yml`, and scaffolds the directory + seed files.
+
+**Manual addition:** Add an entry to `domains.yml`, create the directory under `vault/memory/work/{id}/`, create seed files with L0 headers. Run `qmd update` after.
+
+---
+
+## The 10 Container Skills
+
+All skills live at `container/skills/memory-*/SKILL.md` and are synced into per-group `.claude/skills/` by `src/container-runner.ts` at container startup. Each is a SKILL.md file the agent reads and follows.
+
+### Pipeline Skills (automated via hooks)
+
+These three run automatically when their time interval elapses after a session ends. They can also be invoked on-demand by the user.
+
+| Skill | Interval | What it does |
+|---|---|---|
+| `/memory-reflect` | 24h | Reads raw JSONL session transcripts (via `reflect-cursor.md`), reviews recent observations, detects patterns (3+ on same theme → distill to `patterns.md`), runs consistency sweep (hot-memory vs canonical sources), enforces entity format (3-line max), detects thread candidates (3+ observations across 2+ weeks), logs self-observations (cap 5 per run), checks active scenarios against reality |
+| `/memory-housekeeping` | 24h | Archives bloated files (observations >50 → glacier by tag, action-items >10 completed → glacier), prunes hot-memory (resolved → past → SSOT violations → stale → low-signal), surfaces accountability (stale items, dormant domains), rebuilds `glacier/index.md` + `link-index.md`, adds missing L0 headers, enforces entity format, handles temporal fact markers, writes `briefing-bridge.md` for foresight, rebuilds per-domain `INDEX.md` |
+| `/memory-evolve` | 7d | Reads `evolve-log.md` for continuity, uses `git diff` to see what reflect/housekeeping actually did, audits tier design + condensation pipeline + skill boundaries, measures scorecard metrics (patterns line count vs 70-line cap, entity compression ratio), proposes rule changes (applies low-risk directly to CONVENTIONS.md or skill files, routes high-risk to user), routes content issues to reflect/housekeeping, writes to `evolve-log.md` + `evolve-observations.md` + `scorecard.md` |
+
+### On-Demand Skills (user-invoked)
+
+| Skill | What it does |
+|---|---|
+| `/memory-foresight` | Reads broadly across all domain hot-memories + action-items + entities + calendar + threads. Scans for cross-domain convergence, classifies items by velocity (accelerating/cruising/stalling/dormant), projects patterns forward 2-4 weeks. Writes **one** nudge to `cog-meta/foresight-nudge.md` (Signal / Insight / Suggested Action, citing ≥2 sources). Read-only except for that one file. |
+| `/memory-history` | Deep multi-file search + chronological synthesis. Tries QMD query first for fuzzy matches, falls back to grep for exact. Reads top 3-5 files, extracts passages, presents chronological timeline. Flags memory gaps. |
+| `/memory-scenario` | Models 2-3 decision branches with timelines, dependencies, and contingencies. Maps upstream dependencies (constraints) and downstream consequences (cascades), overlays against real calendar, identifies canary signals for each branch. Writes to `cog-meta/scenarios/{slug}.md` with YAML frontmatter. `/memory-reflect` later checks resolved scenarios and updates `scenario-calibration.md`. |
+| `/memory-personal` | Domain helper for personal life. Loads `personal/hot-memory.md`, routes queries to the right warm file (calendar, health, habits, entities, action-items), follows wiki-links, writes observations + updates. |
+| `/memory-explainer` | Writing helper blending Ros Atkins' 10 attributes of good explanation with Montaigne's essay-as-inquiry. Structured method: Set-Up → Find → Distil → Organize → Link → Tighten → Deliver. Adapts for work/educational/personal audience. |
+| `/memory-humanizer` | Strips AI patterns from text using Wikipedia's "Signs of AI writing" reference. Identifies content patterns (inflated significance, promotional language), language patterns (overused vocabulary, copula avoidance), style patterns (em dash overuse, boldface), communication patterns (sycophancy, hedging). Outputs: draft rewrite → self-audit → final rewrite → change summary. |
+| `/memory-setup` | Conversational domain bootstrapping. Asks about the user's life and work, generates/updates `domains.yml`, scaffolds directories + seed files with L0 headers. Can add new domains to an existing setup. |
+
+### File Ownership Matrix
+
+| File | Written by | Read by |
+|---|---|---|
+| `hot-memory.md` (all) | /memory-reflect (promote/demote), /memory-housekeeping (prune) | Everyone |
+| `observations.md` (all) | Agent (during sessions), ingest-to-memory.sh | /memory-reflect, /memory-history |
+| `action-items.md` (all) | Agent (during sessions) | /memory-housekeeping, /memory-foresight |
+| `entities.md` (all) | Agent (during sessions), /memory-reflect (format enforcement) | /memory-personal, /memory-foresight |
+| `cog-meta/patterns.md` | /memory-reflect (distill from self-observations) | Everyone (loaded every session) |
+| `cog-meta/self-observations.md` | /memory-reflect (append, cap 5/run) | /memory-reflect (continuity) |
+| `cog-meta/improvements.md` | /memory-reflect (triage) | /memory-evolve |
+| `cog-meta/reflect-cursor.md` | /memory-reflect (update last_processed) | /memory-reflect |
+| `cog-meta/briefing-bridge.md` | /memory-housekeeping | /memory-foresight |
+| `cog-meta/foresight-nudge.md` | /memory-foresight | User (read) |
+| `cog-meta/evolve-log.md` | /memory-evolve | /memory-evolve (continuity) |
+| `cog-meta/evolve-observations.md` | /memory-evolve | /memory-evolve (continuity) |
+| `cog-meta/scorecard.md` | /memory-evolve | User (read) |
+| `cog-meta/scenario-calibration.md` | /memory-reflect (retrospectives) | /memory-scenario (confidence calibration) |
+| `cog-meta/scenarios/*.md` | /memory-scenario | /memory-reflect (check resolved), /memory-foresight |
+| `link-index.md` | /memory-housekeeping | Everyone (discover connections) |
+| `glacier/index.md` | /memory-housekeeping | /memory-history, any skill needing archived data |
+| `domains.yml` | /memory-setup | Everyone (domain routing) |
+| `CONVENTIONS.md` | /memory-evolve (rule changes) | Everyone (loaded every session) |
+
+---
+
+## Ingestion Pipeline
+
+### scripts/ingest-to-memory.sh
+
+Runs automatically after every session via `runPostSessionHooks()` in `src/index.ts`.
+
+**Sources scanned:**
+1. `groups/*/conversations/*.md` — session transcripts archived by NanoClaw
+2. `vault/workspace/**/*.md` — user's freeform Obsidian notes
+
+**For each new/changed file:**
+1. Classify domain: workspace files under `work/{project}/` → that domain; everything else → `personal/`
+2. Extract a one-line summary (first non-empty, non-heading line, max 80 chars)
+3. Append an observation: `- YYYY-MM-DD [tag]: <summary> [[source-ref]]`
+4. Track in `data/ingest-memory.state` so files aren't re-processed
+
+**Flags:** `--dry-run`, `--conversations`, `--workspace`, `--reset`
+
+The script creates **pointer observations** — the full content stays in the source file. This keeps `observations.md` small and lets QMD find the full content when needed.
+
+### Raw Transcript Reading (/memory-reflect)
+
+In addition to the ingested observation pointers, `/memory-reflect` reads raw JSONL session transcripts directly from `/home/node/.claude/projects/-workspace-group/*.jsonl` (inside the container). This gives it the full conversational texture — tone, dropped threads, emotional signals, tool calls — that the one-line observation summaries miss.
+
+The `cog-meta/reflect-cursor.md` file tracks `last_processed` so reflect only reads new sessions. If `last_processed` is `never`, it reads the most recent 3.
+
+---
+
+## Time-Gated Maintenance Hooks
+
+**File:** `src/index.ts` (in `runPostSessionHooks()` → `runMaintenanceIfDue()`)
+
+Instead of cron jobs, maintenance runs as the last step of the post-session pipeline. After ingestion + QMD update, the hook checks `data/memory-maintenance.json` for timestamps:
+
+| Skill | Interval | State key |
+|---|---|---|
+| `/memory-reflect` | 24 hours | `lastReflect` |
+| `/memory-housekeeping` | 24 hours | `lastHousekeeping` |
+| `/memory-evolve` | 7 days | `lastEvolve` |
+
+If the interval has elapsed, the hook spawns `claude -p` in the background with the skill prompt. Fire-and-forget — doesn't block the user's next message.
+
+**Why not cron:** cron runs on wall-clock time, meaning it fires even when there's nothing new. The hook fires only when there's actually been a session, meaning maintenance always has fresh content to process. Also: no cron to install, no external scheduler to maintain.
+
+**Adjusting intervals:** Edit the constants in `src/index.ts`:
+```typescript
+const REFLECT_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const HOUSEKEEPING_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const EVOLVE_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+```
+
+**Forcing a run:** Delete or empty `data/memory-maintenance.json` — next session-end triggers all three.
+
+---
+
+## Three-Tier Memory Model
+
+```
+Hot  (*/hot-memory.md)  — Always loaded. <50 lines. Current state, pointers.
+Warm (domain files)     — Loaded when domain skill activates. Per-file limits.
+Glacier (glacier/)      — YAML-frontmattered archives. Indexed via glacier/index.md.
+```
+
+**Movement rules:**
+- observations.md >50 entries → /memory-housekeeping archives oldest by tag to glacier
+- action-items.md >10 completed → housekeeping archives to glacier
+- entities.md >150 lines → inactive entries (last >6 months) to glacier
+- Pattern heating up (3+ observations on same theme) → /memory-reflect distills to patterns.md
+- Pattern cooling off (no references in 2+ weeks) → /memory-reflect removes from hot-memory
+- Topic recurring (3+ observations across 2+ weeks) → /memory-reflect suggests raising a thread
+
+---
 
 ## L0 / L1 / L2 Progressive Loading
 
 Every memory file starts with an L0 summary on line 1:
-
 ```markdown
 <!-- L0: one-line summary, max 80 chars -->
-# File Title
 ```
 
-When deciding whether to read a file, the agent runs three passes in order:
+**Protocol:**
+1. **L0** — `grep -rn "<!-- L0:" memory/{domain}/` → get all file summaries in one call
+2. **L1** — for files >80 lines, scan `##` section headers before reading
+3. **L2** — read the full file or specific section
 
-1. **L0** — grep for `<!-- L0:` across a domain, get all summaries in one call, decide which files matter
-2. **L1** — for files that matter but are >80 lines, scan section headers (`## ...`) first
-3. **L2** — read the full file or section only when needed
+Hot-memory files skip L0/L1 because they're always small by design.
 
-This protocol is cheap to implement, keeps context window usage small, and scales with vault size. Hot-memory files skip L0/L1 because they're always small by design.
+---
 
-## The Five Memory Skills
+## Thread Framework (Zettelkasten)
 
-Each container skill is a SKILL.md prompt Claude reads and executes. They're wired into the agent via `container/skills/` and synced into per-group `.claude/skills/` by `src/container-runner.ts` at container startup.
+When a topic recurs across 3+ observations spanning 2+ weeks (detected by `/memory-reflect`), it gets **raised** to a thread file at `{domain}/threads/{topic-slug}.md` with a consistent spine:
 
-### `/memory-reflect`
+```markdown
+# Thread: Topic Name
 
-**When:** User says "reflect", "what have you learned", or on nightly cron.
+## Current State
+<!-- What's true right now — rewrite freely, always current -->
 
-**Does:**
-1. Reads recent session transcripts and recently-modified memory files
-2. Looks for unresolved threads, broken promises, friction patterns, missed cues, memory gaps
-3. Runs a consistency sweep (hot-memory vs canonical sources, cross-file fact checks, temporal validity)
-4. Distills observation clusters (3+ on same theme) into `patterns.md`
-5. Reviews hot-memory relevance (promote/demote)
-6. Detects thread candidates (3+ observations across 2+ weeks)
-7. Writes self-observations (cap: 5 per run)
-8. Outputs a debrief listing every concrete action taken
+## Timeline
+<!-- Dated entries, append-only, full detail preserved, never condensed -->
+- YYYY-MM-DD: <entry>
 
-**Doesn't:** touch `cog-meta/evolve-log.md` (that's `/memory-evolve`'s file).
-
-### `/memory-housekeeping`
-
-**When:** User says "housekeeping", "clean up memory", or on nightly cron.
-
-**Does:**
-1. Archives bloated files (observations >50, completed action items >10, improvements >10)
-2. Prunes hot-memory files (target <50 lines) by rule priority: resolved → past → SSOT violations → stale → low-signal
-3. Surfaces accountability (stale action items, dormant domains, health escalation)
-4. Rebuilds `glacier/index.md` from YAML frontmatter in glacier files
-5. Rebuilds `link-index.md` from `[[wiki-links]]` across all non-glacier files
-6. Adds missing `<!-- L0: ... -->` headers
-7. Enforces entity registry format (3-line max per entry)
-8. Adds ~~strikethrough~~ to `(until YYYY-MM)` markers with past dates
-
-**Doesn't:** edit content meaning. Only structural rules.
-
-### `/memory-evolve`
-
-**When:** User says "evolve", "audit yourself", or on weekly cron.
-
-**Does:**
-1. Reads `cog-meta/evolve-log.md` for continuity
-2. Runs `git diff` to see what housekeeping and reflect actually did in recent runs
-3. Audits tier design, condensation pipeline, file organization, skill boundaries
-4. Measures scorecard metrics (patterns.md line count vs 70-line cap, entity compression ratio, etc.)
-5. Proposes rule changes — applies low-risk directly, routes high-risk to user review
-6. Routes content issues back to `/memory-reflect` or `/memory-housekeeping`
-7. Updates `evolve-log.md` with run number, findings, and next-run priorities
-
-**Doesn't:** touch memory content. Only the rules that govern content movement.
-
-### `/memory-foresight`
-
-**When:** User says "foresight", "what should I be thinking about", or on daily morning cron.
-
-**Does:**
-1. Reads broadly across all domain hot-memories, action items, entities, calendar, threads
-2. Scans for cross-domain convergence (topics/people appearing in 2+ domains)
-3. Classifies action items by velocity (accelerating/cruising/stalling/dormant)
-4. Projects patterns forward 2-4 weeks
-5. Writes **one** nudge to `cog-meta/foresight-nudge.md`: Signal / Insight / Suggested Action, citing ≥2 sources
-
-**Doesn't:** write anywhere except `foresight-nudge.md`. One nudge per run. Never a list.
-
-### `/memory-history`
-
-**When:** User says "what did I say about...", "when did we discuss...", or asks for a chronological recall.
-
-**Does:**
-1. Tries QMD query first (hybrid search is usually better)
-2. Falls back to grep for exact matches
-3. Extracts relevant passages from top 3-5 files
-4. Synthesizes a chronological answer with dates and citations
-
-**Doesn't:** write to memory. Read-only recall.
-
-## Thread Framework (Zettelkasten Layer)
-
-Threads are **read-optimized synthesis files**. While observations capture raw events (write-optimized), threads pull related fragments into a coherent narrative. One file per topic, consistent spine:
-
-- **Current State** — what's true right now (rewrite freely, always current)
-- **Timeline** — dated entries, append-only, full detail preserved
-- **Insights** — learnings, patterns, what's different this time
-
-A thread gets raised when:
-- A topic appears in 3+ observations across 2+ weeks, OR
-- The user explicitly says "raise X" or "thread X"
-
-Threads live in `{domain}/threads/{topic-slug}.md`. Example: `personal/threads/running.md`, `work/nanoclaw/threads/memory-architecture.md`.
-
-Rules:
-- **One file forever.** Threads grow long; they don't split or condense.
-- **Texture is the value.** Every timeline entry keeps its full detail, quotes, and dates.
-- **Fragments never move.** The observations that seeded the thread stay in place; the thread references them via `[[wiki-links]]`.
-- **Current State is always current.** Rewrite it freely as things change.
-
-## How Maintenance Runs
-
-### Synchronous (after each session)
-
-`src/index.ts:471 runPostSessionHooks()` fires after every successful session:
-
-```
-ingest-to-memory.sh (appends observations)
-      ↓
-qmd update (re-indexes all collections)
+## Insights
+<!-- Learnings, patterns, what's different this time -->
 ```
 
-Fire-and-forget — doesn't block the user's reply. New observations are ready for the next session.
+**Rules:** One file forever (never split/condense). Texture is the value. Fragments never move — the thread references them via `[[wiki-links]]`. Current State is always current.
 
-### Scheduled (cron, optional)
+---
 
-```cron
-# Nightly
-0 3 * * * cd /path/to/nanoclaw && claude -p "Run the /memory-reflect skill against vault/memory/" >> logs/nightly-reflect.log 2>&1
-30 3 * * * cd /path/to/nanoclaw && claude -p "Run the /memory-housekeeping skill against vault/memory/" >> logs/nightly-housekeeping.log 2>&1
+## Scenario Framework
 
-# Weekly (Sundays at 4am)
-0 4 * * 0 cd /path/to/nanoclaw && claude -p "Run the /memory-evolve skill against vault/memory/" >> logs/weekly-evolve.log 2>&1
+`/memory-scenario` creates decision simulation files at `cog-meta/scenarios/{slug}.md` with YAML frontmatter:
+
+```yaml
+---
+type: scenario
+domain: <primary domain(s)>
+created: YYYY-MM-DD
+status: active
+check-by: YYYY-MM-DD
+resolution-by: YYYY-MM-DD
+decision: <one-line>
+source: user|foresight
+---
 ```
 
-Foresight is deliberately omitted from cron — it's more valuable as an on-demand ask.
+Body follows: Decision Point → Dependencies (upstream/downstream) → 2-3 Branches (each with path, timeline, assumptions, risk, canary signal, confidence) → Timeline Overlay against real calendar → Contingency Map → Retrospective (added later by /memory-reflect).
 
-### On-Demand (in any chat)
+`/memory-reflect` (step 3e) checks active scenarios on each run: if `check-by` has passed, it evaluates whether the decision was made, assumptions held, and adds a Retrospective section. Results are logged in `cog-meta/scenario-calibration.md` so future scenarios can calibrate confidence.
 
-Any memory skill can be invoked mid-conversation. The user just asks for it:
-
-- "reflect on last week" → `/memory-reflect`
-- "clean up memory" → `/memory-housekeeping`
-- "audit yourself" → `/memory-evolve`
-- "what should I be thinking about" → `/memory-foresight`
-- "what did I say about X last month" → `/memory-history`
+---
 
 ## Customizing the Rules
 
-The entire memory system lives in editable files:
+Everything is in editable markdown:
 
-| File | What to edit |
+| What to change | Where to edit |
 |---|---|
-| `vault/memory/CONVENTIONS.md` | Core rules — file edit patterns, L0/L1/L2, SSOT rules, glacier thresholds |
-| `container/skills/memory-reflect/SKILL.md` | What `/memory-reflect` does, step by step |
-| `container/skills/memory-housekeeping/SKILL.md` | What `/memory-housekeeping` does |
-| `container/skills/memory-evolve/SKILL.md` | What `/memory-evolve` does |
-| `container/skills/memory-foresight/SKILL.md` | What `/memory-foresight` does |
-| `container/skills/memory-history/SKILL.md` | What `/memory-history` does |
+| Memory conventions (tiers, L0, SSOT, edit patterns, glacier thresholds) | `vault/memory/CONVENTIONS.md` |
+| How `/memory-reflect` works | `container/skills/memory-reflect/SKILL.md` |
+| How `/memory-housekeeping` works | `container/skills/memory-housekeeping/SKILL.md` |
+| How `/memory-evolve` works | `container/skills/memory-evolve/SKILL.md` |
+| How `/memory-foresight` works | `container/skills/memory-foresight/SKILL.md` |
+| How `/memory-scenario` works | `container/skills/memory-scenario/SKILL.md` |
+| How `/memory-personal` works | `container/skills/memory-personal/SKILL.md` |
+| How `/memory-explainer` works | `container/skills/memory-explainer/SKILL.md` |
+| How `/memory-humanizer` works | `container/skills/memory-humanizer/SKILL.md` |
+| How `/memory-setup` works | `container/skills/memory-setup/SKILL.md` |
+| How `/memory-history` works | `container/skills/memory-history/SKILL.md` |
+| Maintenance intervals (24h / 7d) | `src/index.ts` constants |
+| Ingestion script behavior | `scripts/ingest-to-memory.sh` |
+| Domain routing | `vault/memory/domains.yml` |
 
-After editing any of these, rebuild the container image:
+**After editing any container skill or CONVENTIONS.md:**
+```bash
+./container/build.sh   # Rebuilds the image with updated skills
+```
+
+Skills are synced from `container/skills/` into per-group `.claude/skills/` at each container startup (by `src/container-runner.ts`), so the agent always gets the latest version.
+
+**Self-modification via /memory-evolve:** The evolve skill is designed to audit the rules and propose changes. Low-risk rule changes (adjusting a threshold, rephrasing an instruction) it applies directly. High-risk changes (adding/removing a tier, changing the thread framework) it proposes for user review. Every change is visible in `evolve-log.md` and `git log`.
+
+---
+
+## Upgrading from Upstream Cog
+
+Cog has no pip package — upgrades are manual diffs. Here's the process:
+
+### Step 1: Fetch the latest Cog source
 
 ```bash
+# Clone or pull the Cog repo to a temp location
+git clone https://github.com/marciopuga/cog /tmp/cog-latest
+# Or if already cloned:
+cd /tmp/cog-latest && git pull
+```
+
+### Step 2: Diff the conventions
+
+```bash
+# Compare Cog's CLAUDE.md against our CONVENTIONS.md
+diff /tmp/cog-latest/CLAUDE.md vault/memory/CONVENTIONS.md
+```
+
+Look for:
+- New memory rules
+- Changed thresholds (line caps, archival counts)
+- New file types or directory structure changes
+- Changed retrieval protocol
+- New or modified edit patterns
+
+### Step 3: Diff each skill
+
+```bash
+# Map Cog commands → NanoClaw skills:
+#   .claude/commands/reflect.md     → container/skills/memory-reflect/SKILL.md
+#   .claude/commands/housekeeping.md → container/skills/memory-housekeeping/SKILL.md
+#   .claude/commands/evolve.md      → container/skills/memory-evolve/SKILL.md
+#   .claude/commands/foresight.md   → container/skills/memory-foresight/SKILL.md
+#   .claude/commands/history.md     → container/skills/memory-history/SKILL.md
+#   .claude/commands/scenario.md    → container/skills/memory-scenario/SKILL.md
+#   .claude/commands/personal.md    → container/skills/memory-personal/SKILL.md
+#   .claude/commands/explainer.md   → container/skills/memory-explainer/SKILL.md
+#   .claude/commands/humanizer.md   → container/skills/memory-humanizer/SKILL.md
+#   .claude/commands/setup.md       → container/skills/memory-setup/SKILL.md
+
+for cmd in reflect housekeeping evolve foresight history scenario personal explainer humanizer setup; do
+  cog_file="/tmp/cog-latest/.claude/commands/$cmd.md"
+  nc_file="container/skills/memory-$cmd/SKILL.md"
+  if [ -f "$cog_file" ] && [ -f "$nc_file" ]; then
+    echo "=== $cmd ==="
+    diff "$cog_file" "$nc_file" | head -30
+    echo ""
+  fi
+done
+```
+
+### Step 4: Cherry-pick changes
+
+For each diff:
+1. **New rules or steps** → add to our skill, adapting paths (`memory/` → `/workspace/extra/memory`)
+2. **Changed thresholds** → update if the change makes sense for your vault size
+3. **New skills Cog added** → create a new `container/skills/memory-{name}/SKILL.md`, add frontmatter, adapt paths
+4. **Removed steps** → consider removing from ours too, or keep if NanoClaw-specific
+
+### Step 5: Adapt paths
+
+Every Cog command references `memory/` as a relative path. NanoClaw skills reference `/workspace/extra/memory` (container path). When porting, replace:
+- `memory/` → vault root inside the container is `/workspace/extra/memory`
+- `~/.claude/projects/` → `/home/node/.claude/projects/-workspace-group/`
+- `CLAUDE.md` → `CONVENTIONS.md`
+- `.claude/commands/` → `/home/node/.claude/skills/memory-*/`
+
+### Step 6: Rebuild + test
+
+```bash
+npm run build               # TypeScript compiles
+npm test                    # Unit tests pass
+./container/build.sh        # Container image updated
+qmd update                  # Index any new memory files
+```
+
+### Step 7: Commit
+
+```bash
+git add container/skills/memory-* vault/memory/CONVENTIONS.md
+git commit -m "chore: sync memory skills with upstream cog ($(date +%Y-%m-%d))"
+```
+
+### What to watch for in upstream updates
+
+| Upstream change | Our action |
+|---|---|
+| New skill added | Create `container/skills/memory-{name}/SKILL.md`, adapt paths |
+| Existing skill rewritten | Diff carefully, merge useful changes, preserve NanoClaw-specific adaptations |
+| New memory file type | Add seed file to `vault/memory/` with L0 header, update `domains.yml` files list |
+| Convention rule change | Update `vault/memory/CONVENTIONS.md` |
+| New domains.yml fields | Update our domains.yml schema + `/memory-setup` skill |
+| Structural change (new tier, removed directory) | Major — evaluate carefully before adopting |
+
+---
+
+## Adding a New Work Domain
+
+### Via chat (recommended)
+
+Ask the agent: "Add a domain for my side project MyApp" → triggers `/memory-setup` which:
+1. Asks clarifying questions
+2. Appends to `domains.yml`
+3. Creates `vault/memory/work/myapp/` with all seed files
+
+### Manually
+
+1. Add to `vault/memory/domains.yml`:
+```yaml
+  myapp:
+    label: "MyApp — side project description"
+    type: side-project
+    path: work/myapp
+    triggers:
+      - MyApp development, features, bugs
+    files:
+      - hot-memory.md
+      - observations.md
+      - action-items.md
+      - entities.md
+      - dev-log.md
+      - projects.md
+    skill: null
+```
+
+2. Create the directory and seed files:
+```bash
+mkdir -p vault/memory/work/myapp/threads
+for f in hot-memory observations action-items entities dev-log projects patterns; do
+  echo "<!-- L0: MyApp ${f} -->" > "vault/memory/work/myapp/${f}.md"
+  echo "# MyApp ${f^}" >> "vault/memory/work/myapp/${f}.md"
+done
+```
+
+3. Re-index: `qmd update`
+
+---
+
+## Operational Runbook
+
+### Check memory health
+
+```bash
+# File counts per domain
+find vault/memory -name "*.md" | awk -F/ '{print $3}' | sort | uniq -c | sort -rn
+
+# L0 coverage (should match total file count)
+grep -rl "<!-- L0:" vault/memory/ | wc -l
+find vault/memory -name "*.md" | wc -l
+
+# Hot-memory sizes (should each be <50 lines)
+wc -l vault/memory/hot-memory.md vault/memory/*/hot-memory.md vault/memory/*/*/hot-memory.md 2>/dev/null
+
+# Observations approaching archive threshold
+grep -c "^- " vault/memory/*/observations.md vault/memory/*/*/observations.md 2>/dev/null
+
+# Maintenance state
+cat data/memory-maintenance.json 2>/dev/null
+```
+
+### Force maintenance to run now
+
+```bash
+# Delete the state file — next session triggers all three
+rm data/memory-maintenance.json
+
+# Or invoke manually (outside NanoClaw):
+claude -p "Run the /memory-reflect skill against vault/memory/"
+claude -p "Run the /memory-housekeeping skill against vault/memory/"
+claude -p "Run the /memory-evolve skill against vault/memory/"
+```
+
+### Reset ingestion state (re-process all files)
+
+```bash
+./scripts/ingest-to-memory.sh --reset
+./scripts/ingest-to-memory.sh  # re-ingests everything
+qmd update
+```
+
+### Inspect what QMD indexes from memory
+
+```bash
+qmd status                          # collection counts
+qmd search "test query" -c memory   # search within memory collection
+```
+
+### Check which skills the container agent has
+
+```bash
+ls data/sessions/discord_main/.claude/skills/memory-*/SKILL.md
+```
+
+### See what maintenance actually did
+
+```bash
+# Reflect output
+cat vault/memory/cog-meta/self-observations.md | tail -20
+
+# Housekeeping output
+cat vault/memory/glacier/index.md
+
+# Evolve output
+cat vault/memory/cog-meta/evolve-log.md
+
+# Scorecard
+cat vault/memory/cog-meta/scorecard.md
+```
+
+---
+
+## Troubleshooting
+
+### Agent doesn't see memory files
+
+```bash
+# Check the mount exists
+ls vault/memory/CONVENTIONS.md
+
+# Check COG_MEMORY_PATH in config
+grep COG_MEMORY_PATH .env
+
+# Check container-runner mounts it
+grep -A3 "COG_MEMORY_PATH" src/container-runner.ts
+```
+
+### Maintenance never runs
+
+```bash
+# Check the state file
+cat data/memory-maintenance.json
+# If timestamps are recent, intervals haven't elapsed yet
+
+# Check NanoClaw logs for maintenance triggers
+grep -E "memory-reflect|memory-housekeeping|memory-evolve|maintenance" logs/nanoclaw.log | tail -20
+```
+
+### Observations not being appended
+
+```bash
+# Dry-run the ingest script
+./scripts/ingest-to-memory.sh --dry-run
+
+# Check state file for already-processed entries
+wc -l data/ingest-memory.state
+
+# Reset and re-run
+./scripts/ingest-to-memory.sh --reset
+./scripts/ingest-to-memory.sh
+```
+
+### Memory skills not available in container
+
+```bash
+# Check source skills exist
+ls container/skills/memory-*/SKILL.md
+
+# Check they got synced to the group
+ls data/sessions/discord_main/.claude/skills/memory-*/SKILL.md
+
+# If missing, rebuild container
 ./container/build.sh
 ```
 
-The `/memory-evolve` skill is designed to propose edits to these files itself. Its job is to audit the rules, notice where they're failing, and suggest (or directly apply) rule changes. That's Cog's self-modification pattern: the system designs its own rules over time, under your review.
+### QMD doesn't find memory content
 
-## Upgrade Path
+```bash
+qmd status                    # Check memory collection exists with docs
+qmd search "test" -c memory   # Try a search
+qmd update                    # Force re-index
+```
 
-Because Cog's upstream is a set of conventions (not a pip package), upgrades are a manual but simple merge:
+---
 
-1. Fetch the latest `marciopuga/cog` `.claude/commands/*.md` and `CLAUDE.md`
-2. Diff against your current `container/skills/memory-*/SKILL.md` and `vault/memory/CONVENTIONS.md`
-3. Cherry-pick new rules or behaviors you want
-4. Adapt any path references from Cog's `memory/` to NanoClaw's `vault/memory/`
+## Design Decisions
 
-There is no dependency version to pin. There is no runtime to upgrade. A "new version" of Cog is just a new set of ideas about how memory should work, and you choose which ones to adopt.
+### Why conventions (not code)
 
-## Why Cog (not Alfred)
+Conventions = markdown files Claude reads. Code = Python/TypeScript that must be compiled, versioned, tested, deployed. Conventions are:
+- Debuggable by `cat`
+- Editable by anyone (including the agent itself via `/memory-evolve`)
+- Version-free (no pip dependency to pin)
+- Self-documenting (the rules ARE the documentation)
 
-NanoClaw used Alfred for structured memory before April 2026. Alfred is a Python daemon with 22 typed record types maintained by background workers.
+### Why a shared vault (not per-group)
 
-We replaced it with Cog because:
+A single user doesn't need memory isolation between channels. A unified vault lets patterns emerge across contexts — a personal observation about health can inform a work foresight nudge.
 
-1. **Zero runtime.** Alfred required a continuously-running Python daemon, a pip package to maintain, a config schema that could silently break (and did — the daemon was running on ignored defaults for an unknown amount of time), and a whole orchestration layer. Cog has none of that.
-2. **Debuggability.** You can `cat` any Cog memory file and see exactly what's in it. Alfred's state was scattered across JSON files in opaque data directories.
-3. **Self-modification.** Cog's `/memory-evolve` skill audits the rules themselves and proposes changes. Alfred's rules were baked into Python code — customization required forking.
-4. **Native alignment.** NanoClaw's existing memory (per-group `CLAUDE.md`, session archives, workspace directory) was already Cog-shaped. Alfred added a parallel typed-graph world that didn't share anything with the rest of the system.
-5. **Maintainability compounds.** Every future rule change is a markdown edit, not a Python+pip+test+deploy cycle.
+### Why time-gated hooks (not cron)
 
-The tradeoff: we lost Alfred's typed programmatic queries (`alfred vault list task --status=open`). For a personal assistant where NanoClaw's TypeScript code doesn't query the memory programmatically — only the agent does, via grep + QMD — this was an acceptable loss.
+Cron fires on wall-clock time. Hooks fire after sessions. Benefits: maintenance only runs when there's new content, no external scheduler to install, no crontab to maintain across machines.
 
-See [KNOWLEDGE-STACK.md](KNOWLEDGE-STACK.md) for the higher-level architecture view.
+### Why QMD + grep (not just one)
+
+QMD's hybrid search (BM25 + vectors + LLM reranking) is better for fuzzy multi-word queries. Grep is better for exact matches and structured field lookups. The `/memory-history` skill tries QMD first, falls back to grep.
+
+### Why pointer observations (not full copies)
+
+`ingest-to-memory.sh` appends one-line pointers to `observations.md`, not full file copies. This keeps observations small, avoids duplication, and lets QMD find the full content when needed. The original files stay in place.
+
+### Why /memory-reflect reads raw transcripts
+
+The one-line observation summaries from `ingest-to-memory.sh` capture WHAT happened but not HOW. Raw JSONL transcripts preserve tone, dropped threads, emotional signals, repeated friction, tool call patterns — the texture that makes reflection genuinely insightful.
