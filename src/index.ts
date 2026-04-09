@@ -5,6 +5,7 @@ import path from 'path';
 import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
+  DATA_DIR,
   DEFAULT_TRIGGER,
   getTriggerPattern,
   TRIGGER_PATTERN,
@@ -463,11 +464,89 @@ async function runAgent(
   }
 }
 
-// --- Post-session knowledge ingestion ---
+// --- Post-session knowledge ingestion + maintenance ---
 // Runs after each successful agent session to keep memory + QMD up to date.
-// Fire-and-forget (non-blocking). Ingestion appends observations to
-// vault/memory/{domain}/observations.md, then QMD re-indexes so the next
-// session has fresh search results.
+// Fire-and-forget (non-blocking).
+//
+// Pipeline:
+//   1. ingest-to-memory.sh (always, fast — appends observations)
+//   2. qmd update (always, fast — re-indexes)
+//   3. Memory maintenance (time-gated — reflect/housekeeping/evolve at intervals)
+
+const MAINTENANCE_STATE_PATH = path.join(DATA_DIR, 'memory-maintenance.json');
+const REFLECT_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h
+const HOUSEKEEPING_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h
+const EVOLVE_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7d
+
+interface MaintenanceState {
+  lastReflect?: number;
+  lastHousekeeping?: number;
+  lastEvolve?: number;
+}
+
+function readMaintenanceState(): MaintenanceState {
+  try {
+    return JSON.parse(fs.readFileSync(MAINTENANCE_STATE_PATH, 'utf-8'));
+  } catch {
+    return {};
+  }
+}
+
+function writeMaintenanceState(state: MaintenanceState): void {
+  fs.mkdirSync(path.dirname(MAINTENANCE_STATE_PATH), { recursive: true });
+  fs.writeFileSync(MAINTENANCE_STATE_PATH, JSON.stringify(state, null, 2));
+}
+
+function runMaintenanceIfDue(): void {
+  const now = Date.now();
+  const state = readMaintenanceState();
+  const skillsDir = path.join(process.cwd(), 'container', 'skills');
+  let updated = false;
+
+  const runSkill = (name: string) => {
+    const skillPath = path.join(skillsDir, name, 'SKILL.md');
+    if (!fs.existsSync(skillPath)) return;
+    const prompt = `You have the /${name} skill available. Run it now against the memory vault at vault/memory/. Follow the skill instructions completely and report what you did.`;
+    execFile(
+      'claude',
+      ['-p', prompt, '--allowedTools', 'Bash,Read,Write,Edit,Glob,Grep'],
+      { cwd: process.cwd(), timeout: 300000 },
+      (err, stdout, stderr) => {
+        if (err) {
+          logger.warn({ err: stderr || err.message }, `${name} maintenance failed`);
+        } else {
+          logger.info(`${name} maintenance completed`);
+        }
+      },
+    );
+  };
+
+  if (!state.lastReflect || now - state.lastReflect > REFLECT_INTERVAL_MS) {
+    logger.info('Triggering scheduled /memory-reflect');
+    runSkill('memory-reflect');
+    state.lastReflect = now;
+    updated = true;
+  }
+
+  if (
+    !state.lastHousekeeping ||
+    now - state.lastHousekeeping > HOUSEKEEPING_INTERVAL_MS
+  ) {
+    logger.info('Triggering scheduled /memory-housekeeping');
+    runSkill('memory-housekeeping');
+    state.lastHousekeeping = now;
+    updated = true;
+  }
+
+  if (!state.lastEvolve || now - state.lastEvolve > EVOLVE_INTERVAL_MS) {
+    logger.info('Triggering scheduled /memory-evolve');
+    runSkill('memory-evolve');
+    state.lastEvolve = now;
+    updated = true;
+  }
+
+  if (updated) writeMaintenanceState(state);
+}
 
 function runPostSessionHooks(): void {
   const ingestScript = path.join(
@@ -488,10 +567,13 @@ function runPostSessionHooks(): void {
       } else {
         logger.debug('QMD index updated');
       }
+
+      // After ingest + QMD, check if maintenance is due
+      runMaintenanceIfDue();
     });
   };
 
-  // Ingest first, then QMD re-index (sequential: new observations before index)
+  // Ingest first, then QMD re-index, then maintenance check
   if (fs.existsSync(ingestScript)) {
     execFile('bash', [ingestScript], (err, stdout, stderr) => {
       if (err) {
@@ -502,7 +584,6 @@ function runPostSessionHooks(): void {
       runQmdUpdate();
     });
   } else {
-    // No ingest script (fresh install pre-scaffold) — still try to refresh QMD
     runQmdUpdate();
   }
 }

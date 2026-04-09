@@ -38,19 +38,35 @@ Focus on recently-changed files. Skip files that haven't been modified.
 
 ## Memory Files (read these on activation)
 
+- `cog-meta/reflect-cursor.md` (session path + ingestion cursor)
 - `cog-meta/self-observations.md`
 - `cog-meta/patterns.md`
 - `cog-meta/improvements.md`
 - `hot-memory.md`
 - Each domain's `hot-memory.md`, `observations.md`, `action-items.md`
 
+Reference as needed (read `domains.yml` to discover all active domains):
+- All domain `observations.md` files
+- All domain `action-items.md` files
+- All `hot-memory.md` files
+
 ## Process
 
 ### 1. Review Recent Interactions
 
-**Sources:**
-- Recent session transcripts in `/workspace/group/conversations/` (from the current group)
-- Recent appended observations across all domain `observations.md` files
+**Source: Claude Code session transcripts.** Read `cog-meta/reflect-cursor.md` for the session path and cursor.
+
+**How to read sessions:**
+1. Get `session_path` from reflect-cursor.md (inside container: `/home/node/.claude/projects/-workspace-group/`)
+2. Glob for `*.jsonl` in that directory — each file is one session (skip `subagents/` directory)
+3. Get `last_processed` timestamp from reflect-cursor.md
+4. Only read sessions modified **after** `last_processed` (skip already-ingested). If `last_processed` is `never`, read the most recent 3 sessions.
+5. Extract user messages: lines where `type` is `"user"` and `message.content` is a **string** (not an array — arrays are tool results, skip those)
+6. Extract assistant messages: lines where `type` is `"assistant"` and `message.content` contains items with `type: "text"`
+
+**After processing**, update `last_processed` in reflect-cursor.md to the current ISO 8601 timestamp.
+
+**Also review:** recently appended observations across all domain `observations.md` files.
 
 **Look for:**
 - **Unresolved threads** — questions asked but never answered, topics dropped
@@ -58,6 +74,7 @@ Focus on recently-changed files. Skip files that haven't been modified.
 - **Repeated friction** — same question asked multiple ways, user corrections, confusion
 - **Missed cues** — things the user had to repeat, emotional signals not picked up
 - **Memory gaps** — information discussed but never saved to memory files
+- **Feature ideas** — things that came up organically that would improve the system
 
 ### 2. Consistency Sweep
 
