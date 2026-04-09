@@ -18,7 +18,7 @@ import {
   QMD_MCP_PORT,
   TIMEZONE,
 } from './config.js';
-import { ALFRED_VAULT_PATH } from './config.js'; // [skill/alfred]
+import { COG_MEMORY_PATH } from './config.js'; // [skill/cog-memory]
 import {
   TASKOSAUR_URL,
   TASKOSAUR_EMAIL,
@@ -256,6 +256,18 @@ function buildVolumeMounts(
     mounts.push(...validatedMounts);
   }
 
+  // [skill/cog-memory] Mount the shared memory vault read-write so every group
+  // can read hot-memory, append observations, and run /memory-* skills.
+  // Unlike Alfred (which used the allowlist), Cog memory is NanoClaw-managed
+  // and always lives under the project root, so it's always safe to mount.
+  if (fs.existsSync(COG_MEMORY_PATH)) {
+    mounts.push({
+      hostPath: COG_MEMORY_PATH,
+      containerPath: '/workspace/extra/memory',
+      readonly: false,
+    });
+  }
+
   return mounts;
 }
 
@@ -274,9 +286,10 @@ function buildContainerArgs(
     args.push('-e', 'OLLAMA_ADMIN_TOOLS=true');
   }
 
-  // [skill/alfred] Forward vault path so container agent can use `alfred vault` CLI
-  if (ALFRED_VAULT_PATH) {
-    args.push('-e', `ALFRED_VAULT_PATH=/workspace/extra/vault`);
+  // [skill/cog-memory] Container sees the memory vault at a stable path.
+  // The actual host→container mount is handled via additionalMounts (below).
+  if (COG_MEMORY_PATH && fs.existsSync(COG_MEMORY_PATH)) {
+    args.push('-e', `COG_MEMORY_PATH=/workspace/extra/memory`);
   }
 
   // [skill/taskosaur] Forward Taskosaur credentials so the container skill can authenticate

@@ -453,7 +453,7 @@ async function runAgent(
       return 'error';
     }
 
-    // Post-session: ingest new content into Alfred + refresh QMD index
+    // Post-session: append new observations to vault/memory + refresh QMD index
     runPostSessionHooks();
 
     return 'success';
@@ -464,42 +464,46 @@ async function runAgent(
 }
 
 // --- Post-session knowledge ingestion ---
-// Runs after each successful agent session to keep Alfred and QMD up to date.
-// Fire-and-forget (non-blocking). Ingestion feeds new content to Alfred,
-// then QMD re-indexes so the next session has fresh search results.
+// Runs after each successful agent session to keep memory + QMD up to date.
+// Fire-and-forget (non-blocking). Ingestion appends observations to
+// vault/memory/{domain}/observations.md, then QMD re-indexes so the next
+// session has fresh search results.
 
 function runPostSessionHooks(): void {
   const ingestScript = path.join(
     process.cwd(),
     'scripts',
-    'ingest-to-alfred.sh',
+    'ingest-to-memory.sh',
   );
 
-  // Alfred ingestion, then QMD re-index (sequential: ingest first, index after)
+  const runQmdUpdate = () => {
+    execFile('qmd', ['update'], (qmdErr, _stdout, qmdStderr) => {
+      if (qmdErr) {
+        if (!/ENOENT|not found/i.test(String(qmdErr))) {
+          logger.warn(
+            { err: qmdStderr || qmdErr.message },
+            'QMD update failed',
+          );
+        }
+      } else {
+        logger.debug('QMD index updated');
+      }
+    });
+  };
+
+  // Ingest first, then QMD re-index (sequential: new observations before index)
   if (fs.existsSync(ingestScript)) {
     execFile('bash', [ingestScript], (err, stdout, stderr) => {
       if (err) {
-        logger.warn({ err: stderr || err.message }, 'Alfred ingestion failed');
-        return;
+        logger.warn({ err: stderr || err.message }, 'Memory ingestion failed');
+      } else if (stdout.trim()) {
+        logger.info(stdout.trim(), 'Memory ingestion');
       }
-      if (stdout.trim()) {
-        logger.info(stdout.trim(), 'Alfred ingestion');
-      }
-
-      // QMD re-index after ingestion completes
-      execFile('qmd', ['update'], (qmdErr, _stdout, qmdStderr) => {
-        if (qmdErr) {
-          if (!/ENOENT|not found/i.test(String(qmdErr))) {
-            logger.warn(
-              { err: qmdStderr || qmdErr.message },
-              'QMD update failed',
-            );
-          }
-        } else {
-          logger.debug('QMD index updated');
-        }
-      });
+      runQmdUpdate();
     });
+  } else {
+    // No ingest script (fresh install pre-scaffold) — still try to refresh QMD
+    runQmdUpdate();
   }
 }
 

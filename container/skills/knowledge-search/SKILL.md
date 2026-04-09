@@ -54,10 +54,10 @@ Results include collection context that tells you where information came from:
 
 | Collection | Contains |
 |------------|----------|
-| `obsidian` | User's work logs and notes written in Obsidian |
+| `workspace` | User's work logs and notes written in Obsidian |
 | `conversations` | Archived transcripts from past agent sessions |
 | `group-memory` | Per-group memory files maintained by the agent |
-| `alfred-vault` | Structured knowledge records (decisions, tasks, projects, etc.) |
+| `memory` | Cog-native memory — hot memory, observations, entities, action items, threads, glacier archives |
 
 Not all collections may be configured — check `status` if unsure.
 

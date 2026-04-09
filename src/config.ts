@@ -13,7 +13,7 @@ const envConfig = readEnvFile([
   'OLLAMA_ADMIN_TOOLS',
   'QMD_MCP_PORT',
   'TZ',
-  'ALFRED_VAULT_PATH', // [skill/alfred]
+  'COG_MEMORY_PATH', // [skill/cog-memory]
   'TASKOSAUR_URL', // [skill/taskosaur]
   'TASKOSAUR_EMAIL', // [skill/taskosaur]
   'TASKOSAUR_PASSWORD', // [skill/taskosaur]
@@ -94,9 +94,14 @@ export function getTriggerPattern(trigger?: string): RegExp {
 
 export const TRIGGER_PATTERN = buildTriggerPattern(DEFAULT_TRIGGER);
 
-// [skill/alfred] Obsidian vault path for Alfred integration
-export const ALFRED_VAULT_PATH =
-  process.env.ALFRED_VAULT_PATH || envConfig.ALFRED_VAULT_PATH || '';
+// [skill/cog-memory] Cog-native memory vault path.
+// Defaults to vault/memory/ at the project root if set to empty string.
+// Set to a different path in .env to use an external memory location.
+const rawCogMemoryPath =
+  process.env.COG_MEMORY_PATH || envConfig.COG_MEMORY_PATH || '';
+export const COG_MEMORY_PATH = rawCogMemoryPath
+  ? path.resolve(rawCogMemoryPath)
+  : path.resolve(PROJECT_ROOT, 'vault', 'memory');
 
 // [skill/taskosaur] Project management integration
 export const TASKOSAUR_URL =

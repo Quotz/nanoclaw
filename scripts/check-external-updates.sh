@@ -88,31 +88,7 @@ if ! $JSON_MODE; then
 fi
 
 # --- Register all external dependencies here ---
-
-# Alfred (if installed)
-if [ -f "$PROJECT_ROOT/scripts/update-alfred.sh" ]; then
-  # Alfred uses pip, check differently
-  local_ver=$(pip show alfred-vault 2>/dev/null | grep "^Version:" | awk '{print $2}' || echo "")
-  remote_ver=$(curl -sf "https://pypi.org/pypi/alfred-vault/json" 2>/dev/null | grep -o '"version":"[^"]*"' | head -1 | sed 's/"version":"//;s/"//' || echo "")
-
-  if $JSON_MODE; then
-    has_update=false
-    if [ -n "$local_ver" ] && [ -n "$remote_ver" ] && [ "$local_ver" != "$remote_ver" ]; then
-      has_update=true
-    fi
-    json_entries+=("{\"name\":\"alfred\",\"local\":\"$local_ver\",\"remote\":\"$remote_ver\",\"stale_days\":0,\"has_update\":$has_update,\"sync_script\":\"./scripts/update-alfred.sh\"}")
-  else
-    if [ -n "$local_ver" ] && [ -n "$remote_ver" ] && [ "$local_ver" != "$remote_ver" ]; then
-      echo "  alfred: UPDATE AVAILABLE ($local_ver -> $remote_ver)"
-      echo "    Update: ./scripts/update-alfred.sh"
-      updates_available=$((updates_available + 1))
-    elif [ -n "$local_ver" ]; then
-      echo "  alfred: up to date ($local_ver)"
-    else
-      echo "  alfred: not installed"
-    fi
-  fi
-fi
+# (Cog-native memory has no external Python dependencies to track.)
 
 # --- Output ---
 

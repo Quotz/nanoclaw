@@ -16,7 +16,7 @@ vi.mock('./config.js', () => ({
   GROUPS_DIR: '/tmp/nanoclaw-test-groups',
   IDLE_TIMEOUT: 1800000, // 30min
   OLLAMA_ADMIN_TOOLS: false,
-  ALFRED_VAULT_PATH: '',
+  COG_MEMORY_PATH: '/tmp/nanoclaw-test-memory',
   QMD_MCP_PORT: undefined,
   TASKOSAUR_URL: '',
   TASKOSAUR_EMAIL: '',
