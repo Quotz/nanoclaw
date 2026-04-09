@@ -119,6 +119,44 @@ append_observation() {
   echo "$line" >> "$obs_file"
 }
 
+# Extract a summary from a conversation transcript.
+# Looks for the first <message> tag content (the user's opening message).
+extract_conversation_summary() {
+  local file="$1"
+  local msg
+  # Try to grab the first user message from <message ...>content</message>
+  # Uses sed (macOS-compatible, no grep -P needed)
+  msg="$(sed -n 's/.*<message[^>]*>\([^<]*\)<\/message>.*/\1/p' "$file" 2>/dev/null | head -1 | head -c 80)"
+  if [ -n "$msg" ]; then
+    echo "$msg"
+    return
+  fi
+  # Fallback: first **User**: line, stripping XML tags
+  msg="$(grep -m1 '^\*\*User\*\*:' "$file" 2>/dev/null | sed 's/\*\*User\*\*: //;s/<[^>]*>//g' | head -c 80)"
+  if [ -n "$msg" ]; then
+    echo "$msg"
+    return
+  fi
+  echo "(conversation)"
+}
+
+# Extract a summary from a workspace/general markdown file.
+# Takes the first non-empty, non-heading, non-frontmatter line.
+extract_file_summary() {
+  local file="$1"
+  local summary
+  summary="$(awk '
+    BEGIN { in_fm = 0 }
+    /^---$/ { in_fm = !in_fm; next }
+    in_fm { next }
+    /^#/ { next }
+    /^<!--/ { next }
+    /^[[:space:]]*$/ { next }
+    { print; exit }
+  ' "$file" | head -c 80)"
+  echo "${summary:-(no preview)}"
+}
+
 # Generic: ingest a file if not already processed
 ingest_file() {
   local file="$1"
@@ -132,17 +170,12 @@ ingest_file() {
     return
   fi
 
-  # Summary = first non-empty, non-heading, non-frontmatter line (max 80 chars)
   local summary
-  summary="$(awk '
-    BEGIN { in_fm = 0 }
-    /^---$/ { in_fm = !in_fm; next }
-    in_fm { next }
-    /^#/ { next }
-    /^[[:space:]]*$/ { next }
-    { print; exit }
-  ' "$file" | head -c 80)"
-  summary="${summary:-(no preview)}"
+  if [ "$tag" = "conversation" ]; then
+    summary="$(extract_conversation_summary "$file")"
+  else
+    summary="$(extract_file_summary "$file")"
+  fi
 
   append_observation "$domain" "$tag" "$summary" "$source_ref"
 

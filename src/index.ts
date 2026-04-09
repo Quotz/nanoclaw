@@ -506,14 +506,33 @@ function runMaintenanceIfDue(): void {
   const runSkill = (name: string) => {
     const skillPath = path.join(skillsDir, name, 'SKILL.md');
     if (!fs.existsSync(skillPath)) return;
-    const prompt = `You have the /${name} skill available. Run it now against the memory vault at vault/memory/. Follow the skill instructions completely and report what you did.`;
+
+    // Read the full skill text and pass it as the prompt so the host-side
+    // Claude session gets the complete instructions without needing to discover
+    // the file. Remap container paths to host-relative paths.
+    const skillText = fs.readFileSync(skillPath, 'utf-8');
+    const prompt = [
+      '# Maintenance Task',
+      '',
+      'Run the following memory maintenance skill against the vault at vault/memory/ (relative to cwd).',
+      'All paths in the skill that reference /workspace/extra/memory should be read as vault/memory/ instead.',
+      'Session transcripts are at data/sessions/ (not /home/node/.claude/).',
+      'Follow the instructions completely and report what you did.',
+      '',
+      '---',
+      '',
+      skillText,
+    ].join('\n');
     execFile(
       'claude',
       ['-p', prompt, '--allowedTools', 'Bash,Read,Write,Edit,Glob,Grep'],
       { cwd: process.cwd(), timeout: 300000 },
       (err, stdout, stderr) => {
         if (err) {
-          logger.warn({ err: stderr || err.message }, `${name} maintenance failed`);
+          logger.warn(
+            { err: stderr || err.message },
+            `${name} maintenance failed`,
+          );
         } else {
           logger.info(`${name} maintenance completed`);
         }
