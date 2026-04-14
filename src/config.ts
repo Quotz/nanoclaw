@@ -19,6 +19,7 @@ const envConfig = readEnvFile([
   'TASKOSAUR_PASSWORD', // [skill/taskosaur]
   'TICKTICK_BEARER_TOKEN', // [skill/ticktick]
   'ONECLI_URL',
+  'CREDENTIAL_PROXY_HOST',
 ]);
 
 export const ASSISTANT_NAME =
@@ -67,6 +68,8 @@ export const CREDENTIAL_PROXY_PORT = parseInt(
   10,
 );
 export const ONECLI_URL = process.env.ONECLI_URL || envConfig.ONECLI_URL;
+export const CREDENTIAL_PROXY_HOST =
+  process.env.CREDENTIAL_PROXY_HOST || envConfig.CREDENTIAL_PROXY_HOST;
 export const MAX_MESSAGES_PER_PROMPT = Math.max(
   1,
   parseInt(process.env.MAX_MESSAGES_PER_PROMPT || '10', 10) || 10,
