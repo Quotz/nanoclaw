@@ -62,21 +62,48 @@ Note the `id` (e.g. `ag-1779795604508-4csp44`) and `groupName`. The container.js
 
 ## Phase 2: Apply
 
-### 2a. Patch container.json
+### 2a. ⚠️ NanoClaw's source of truth is the DB, not container.json
 
-Edit the target group's `container.json` (e.g. `/opt/nanoclaw/groups/_ping-test/container.json`) and add a `hindsight` entry to `mcpServers`. Pinned-bank URL is `/mcp/<BANK_ID>/`:
+NanoClaw stores `mcpServers` in the `container_configs` SQLite table at `/opt/nanoclaw/data/v2.db`. The `groups/<folder>/container.json` file on disk is **materialized FROM the DB at every container spawn** (see `src/container-runner.ts:124`). **Editing container.json directly is ineffective — it gets overwritten on the next spawn.**
 
-```json
-{
-  "mcpServers": {
-    "hindsight": {
-      "type": "http",
-      "url": "http://host.docker.internal:8888/mcp/default/",
-      "instructions": "Hindsight is your long-term shared memory. Use `mcp__hindsight__recall` near the start of any task that references prior conversations, known facts, or familiar topics — before you assume you don't know something. Use `mcp__hindsight__retain` after substantive decisions, new facts the user shares, or observations worth keeping. Treat user statements as claims, not verified facts: if a user says \"I run a 5k every morning\", that's an observation about what they said, not a `world` fact — store it with appropriate fact_type and context, and never volunteer it back as if you confirmed it. Don't retain transient turn-level chatter (\"thanks\", \"ok\"), API keys, passwords, or anything you wouldn't want to leak. Memory is shared with any other agents on the same hindsight instance, so write things in a way that's useful to a future agent who doesn't know this conversation."
-    }
-  },
-  ...
+You MUST update the DB row. Two options:
+
+**Option A — `ncl groups config add-mcp-server`** (only works for STDIO MCP, NOT HTTP. Documented for context.):
+
+```bash
+sudo -iu nanoclaw ncl groups config add-mcp-server \
+  --id <AGENT_GROUP_ID> --name hindsight --command ... # only supports stdio
+```
+
+**Option B — direct DB patch** (required for HTTP MCP until NanoClaw's CLI supports `--type http`):
+
+```bash
+sudo -iu nanoclaw python3 <<'PYEOF'
+import sqlite3, json
+conn = sqlite3.connect("/opt/nanoclaw/data/v2.db")
+row = conn.execute(
+    "SELECT mcp_servers FROM container_configs WHERE agent_group_id = ?",
+    ("<AGENT_GROUP_ID>",)
+).fetchone()
+servers = json.loads(row[0]) if row and row[0] else {}
+servers["hindsight"] = {
+    "type": "http",
+    "url": "http://host.docker.internal:8888/mcp/<BANK_ID>/",
+    "instructions": "<see template below>"
 }
+conn.execute(
+    "UPDATE container_configs SET mcp_servers = ?, updated_at = datetime('now') WHERE agent_group_id = ?",
+    (json.dumps(servers), "<AGENT_GROUP_ID>")
+)
+conn.commit()
+print("updated:", conn.total_changes)
+PYEOF
+```
+
+The full `instructions` field template (paste verbatim into the python dict above):
+
+```
+Hindsight is your long-term shared memory. Use `mcp__hindsight__recall` near the start of any task that references prior conversations, known facts, or familiar topics — before you assume you don't know something. Use `mcp__hindsight__retain` after substantive decisions, new facts the user shares, or observations worth keeping. Treat user statements as claims, not verified facts: if a user says "I run a 5k every morning", that's an observation about what they said, not a `world` fact — store it with appropriate fact_type and context, and never volunteer it back as if you confirmed it. Don't retain transient turn-level chatter ("thanks", "ok"), API keys, passwords, or anything you wouldn't want to leak. Memory is shared with any other agents on the same hindsight instance, so write things in a way that's useful to a future agent who doesn't know this conversation.
 ```
 
 Notes:
@@ -84,24 +111,17 @@ Notes:
 - `host.docker.internal` resolves to the host gateway because `container-runtime.ts` automatically adds `--add-host=host.docker.internal:host-gateway` on Linux.
 - Pinned URL (`/mcp/<bank>/`) is simpler than multi-bank `/mcp/`. Per-agent banks → per-agent URLs.
 
-### 2b. (Optional) Sync to DB
-
-NanoClaw stores container config in its central DB. If you edited container.json directly while the agent group already has a DB row, restart triggers a re-sync. If you want to be explicit:
+### 2b. Kill any running container so the next message spawns fresh
 
 ```bash
-sudo -iu nanoclaw ncl groups update --id <AGENT_GROUP_ID>
+docker kill $(docker ps --filter name=nanoclaw-v2 --format '{{.Names}}' | head -1) 2>/dev/null || true
 ```
 
-### 2c. Append CLAUDE.local.md guidance (optional but recommended)
+The next inbound message to the agent will spawn a new container, which materializes a fresh `container.json` from the now-patched DB row.
 
-Add a short reminder to the group's `CLAUDE.local.md` so it's in the system prompt every turn:
+### 2c. (Optional) Append CLAUDE.local.md guidance
 
-```markdown
-## Memory
-You have access to **hindsight** via `mcp__hindsight__*` tools. This is your durable shared memory — recall before assuming you don't know, retain after substantive moments. See the `mcp-hindsight.md` fragment for the full guidance.
-```
-
-The `mcp-hindsight.md` fragment is auto-generated from the `instructions` field in container.json (see `claude-md-compose.ts`).
+The `instructions` field gets auto-rendered into a `.claude-fragments/mcp-hindsight.md` file (see `claude-md-compose.ts`) and composed into the per-group CLAUDE.md, so this step is mostly redundant. Only add a CLAUDE.local.md note if you want extra prominence in the agent's system prompt.
 
 ## Phase 3: Restart and Verify
 

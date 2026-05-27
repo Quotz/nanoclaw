@@ -432,6 +432,14 @@ async function buildContainerArgs(
   }
   log.info('OneCLI gateway applied', { containerName });
 
+  // Allow agent containers to reach host-side services (hindsight, future
+  // memory/CRM/etc on the host) directly, bypassing the OneCLI gateway.
+  // OneCLI sets HTTP_PROXY/HTTPS_PROXY; NO_PROXY tells fetch/axios/etc to
+  // skip the proxy for these destinations.
+  const NO_PROXY_HOSTS = 'host.docker.internal,172.17.0.1,localhost,127.0.0.1';
+  args.push('-e', `NO_PROXY=${NO_PROXY_HOSTS}`);
+  args.push('-e', `no_proxy=${NO_PROXY_HOSTS}`);
+
   // Host gateway
   args.push(...hostGatewayArgs());
 
