@@ -1,16 +1,17 @@
 /**
- * Self-modification MCP tools: install_packages, add_mcp_server.
+ * Self-modification MCP tools: install_packages, add_mcp_server, patch_bridge.
  *
- * Both are fire-and-forget — the tool writes a system action row and returns
+ * Fire-and-forget — the tool writes a system action row and returns
  * immediately. The host processes the request (including admin approval)
  * and notifies the agent via a chat message when complete. Admin approval
  * is approval to apply the change: `install_packages` auto-rebuilds the
- * per-agent image and restarts the container; `add_mcp_server` just
- * updates `container.json` and restarts (bun runs TS directly — no build
- * step needed for a pure MCP wiring change).
+ * per-agent image and restarts the container; `add_mcp_server` updates
+ * `container.json` and restarts; `patch_bridge` applies a unified diff to
+ * the host-side taskosaur-mcp bridge source, restarts it, health-checks,
+ * commits + pushes the change, and bounces the agent.
  *
- * Package names are sanitized here at the tool boundary AND re-validated on
- * the host side (defense in depth).
+ * Inputs are sanitized at the tool boundary AND re-validated on the host
+ * side (defense in depth).
  */
 import { writeMessageOut } from '../db/messages-out.js';
 import { registerTools } from './server.js';
@@ -117,4 +118,85 @@ export const addMcpServer: McpToolDefinition = {
   },
 };
 
-registerTools([installPackages, addMcpServer]);
+const MAX_DIFF_BYTES = 20_000;
+const MAX_DESCRIPTION = 1_000;
+const DIFF_FILE_HEADER_RE = /^(?:---|\+\+\+) (?:a|b)\/(.+)$/gm;
+
+function affectedFiles(diff: string): { files: string[]; problems: string[] } {
+  const problems: string[] = [];
+  const files = new Set<string>();
+  let m: RegExpExecArray | null;
+  DIFF_FILE_HEADER_RE.lastIndex = 0;
+  while ((m = DIFF_FILE_HEADER_RE.exec(diff)) !== null) {
+    const path = m[1].trim();
+    if (path === '/dev/null') {
+      problems.push('diff creates or deletes a file (only modifications to existing files are allowed)');
+      continue;
+    }
+    if (!path.endsWith('.mjs')) {
+      problems.push(`diff touches non-.mjs file "${path}" (only .mjs files allowed)`);
+      continue;
+    }
+    if (path.includes('..') || path.startsWith('/')) {
+      problems.push(`diff has suspicious path "${path}"`);
+      continue;
+    }
+    files.add(path);
+  }
+  if (files.size === 0 && problems.length === 0) {
+    problems.push('diff contains no recognizable file headers');
+  }
+  return { files: [...files], problems };
+}
+
+export const patchBridge: McpToolDefinition = {
+  tool: {
+    name: 'patch_bridge',
+    description:
+      'Propose a patch to the host-side taskosaur-mcp bridge source (e.g. fix a tool bug, add a new tool). The diff is a unified-format patch against the bridge working tree at /opt/taskosaur-mcp/. Only modifications to existing *.mjs files are allowed. On admin approval: diff applied → service restarted → health-checked → on success committed + pushed → container bounced. On any failure, the patch is reverted and the bridge is restored.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        description: {
+          type: 'string',
+          description: 'Short explanation of what the patch does and why (shown to admin in approval card).',
+        },
+        diff: {
+          type: 'string',
+          description:
+            'Unified diff in standard "git diff" format. Headers must look like "--- a/tools.mjs\\n+++ b/tools.mjs". No new-file / deleted-file diffs; only modifications to existing .mjs files.',
+        },
+      },
+      required: ['description', 'diff'],
+    },
+  },
+  async handler(args) {
+    const description = ((args.description as string) || '').trim();
+    const diff = (args.diff as string) || '';
+
+    if (!description) return err('description is required');
+    if (description.length > MAX_DESCRIPTION) return err(`description must be ≤ ${MAX_DESCRIPTION} chars`);
+    if (!diff) return err('diff is required');
+    if (diff.length > MAX_DIFF_BYTES) return err(`diff must be ≤ ${MAX_DIFF_BYTES} bytes (got ${diff.length})`);
+
+    const { files, problems } = affectedFiles(diff);
+    if (problems.length > 0) return err(problems.join('; '));
+
+    const requestId = generateId();
+    writeMessageOut({
+      id: requestId,
+      kind: 'system',
+      content: JSON.stringify({
+        action: 'patch_bridge',
+        description,
+        diff,
+        files,
+      }),
+    });
+
+    log(`patch_bridge: ${requestId} → files=[${files.join(',')}] diffBytes=${diff.length}`);
+    return ok(`Bridge patch request submitted (${files.length} file${files.length === 1 ? '' : 's'}, ${diff.length}B). You will be notified when admin approves or rejects.`);
+  },
+};
+
+registerTools([installPackages, addMcpServer, patchBridge]);
