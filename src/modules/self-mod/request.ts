@@ -63,6 +63,86 @@ export async function handleInstallPackages(content: Record<string, unknown>, se
   });
 }
 
+const MAX_DIFF_BYTES = 20_000;
+const MAX_DESCRIPTION = 1_000;
+const DIFF_FILE_HEADER_RE = /^(?:---|\+\+\+) (?:a|b)\/(.+)$/gm;
+
+function affectedFiles(diff: string): { files: string[]; problems: string[] } {
+  const problems: string[] = [];
+  const files = new Set<string>();
+  let m: RegExpExecArray | null;
+  DIFF_FILE_HEADER_RE.lastIndex = 0;
+  while ((m = DIFF_FILE_HEADER_RE.exec(diff)) !== null) {
+    const path = m[1].trim();
+    if (path === '/dev/null') {
+      problems.push('diff creates or deletes a file (only modifications allowed)');
+      continue;
+    }
+    if (!path.endsWith('.mjs')) {
+      problems.push(`diff touches non-.mjs file "${path}"`);
+      continue;
+    }
+    if (path.includes('..') || path.startsWith('/')) {
+      problems.push(`diff has suspicious path "${path}"`);
+      continue;
+    }
+    files.add(path);
+  }
+  if (files.size === 0 && problems.length === 0) {
+    problems.push('diff contains no recognizable file headers');
+  }
+  return { files: [...files], problems };
+}
+
+export async function handlePatchBridge(content: Record<string, unknown>, session: Session): Promise<void> {
+  const agentGroup = getAgentGroup(session.agent_group_id);
+  if (!agentGroup) {
+    notifyAgent(session, 'patch_bridge failed: agent group not found.');
+    return;
+  }
+
+  const description = ((content.description as string) || '').trim();
+  const diff = (content.diff as string) || '';
+
+  if (!description) {
+    notifyAgent(session, 'patch_bridge failed: description is required.');
+    return;
+  }
+  if (description.length > MAX_DESCRIPTION) {
+    notifyAgent(session, `patch_bridge failed: description exceeds ${MAX_DESCRIPTION} chars.`);
+    return;
+  }
+  if (!diff) {
+    notifyAgent(session, 'patch_bridge failed: diff is required.');
+    return;
+  }
+  if (diff.length > MAX_DIFF_BYTES) {
+    notifyAgent(session, `patch_bridge failed: diff exceeds ${MAX_DIFF_BYTES} bytes.`);
+    log.warn('patch_bridge: oversized diff rejected', { size: diff.length });
+    return;
+  }
+
+  const { files, problems } = affectedFiles(diff);
+  if (problems.length > 0) {
+    notifyAgent(session, `patch_bridge failed: ${problems.join('; ')}.`);
+    return;
+  }
+
+  const truncatedDiff = diff.length > 6_000 ? `${diff.slice(0, 6_000)}\n… [truncated, full diff applied on approve, ${diff.length}B total]` : diff;
+  await requestApproval({
+    session,
+    agentName: agentGroup.name,
+    action: 'patch_bridge',
+    payload: { description, diff, files },
+    title: 'Patch Bridge Request',
+    question:
+      `Agent "${agentGroup.name}" is requesting a patch to taskosaur-mcp:\n` +
+      `Files: ${files.join(', ')}\n` +
+      `Reason: ${description}\n\n` +
+      `\`\`\`diff\n${truncatedDiff}\n\`\`\``,
+  });
+}
+
 export async function handleAddMcpServer(content: Record<string, unknown>, session: Session): Promise<void> {
   const agentGroup = getAgentGroup(session.agent_group_id);
   if (!agentGroup) {
