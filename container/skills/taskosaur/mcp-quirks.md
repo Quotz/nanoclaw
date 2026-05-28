@@ -5,22 +5,24 @@ The bundled Taskosaur app has a few inconsistencies that the
 errors despite the bridge, read on — the bridge code may have drifted from
 this list, or you may be calling an endpoint the bridge doesn't cover.
 
-## 1. Sprint creation: project lookup is by SLUG, not UUID
+## 1. Sprint creation: body field is `projectSlug`, not `projectId`
 
 **Endpoint:** `POST /api/sprints`
 
-**Symptom:** `{"message":"Project not found","statusCode":404}` even though
-the project clearly exists.
+**Symptom (pre-2026-05 builds):** `{"message":"Project not found","statusCode":404}`
+even though the project clearly exists — DTO was misnamed `projectId`
+while the controller treated it as a slug.
 
-**Cause:** Taskosaur's `SprintsService.create` does
-`prisma.project.findUnique({ where: { slug: dto.projectId } })`. The DTO
-field is named `projectId` but the controller treats it as a slug.
+**Current state:** upstream (2026-05+) renamed the DTO field to
+`projectSlug`, which is honest about what it wants. The bridge `create_sprint`
+tool keeps `projectId` as its input field name (callers pass the UUID
+they got from `list_projects`) and translates UUID → slug → wire as
+`projectSlug` before sending. You can also pass a slug directly to the
+tool.
 
-**Bridge workaround:** `create_sprint` auto-resolves UUID→slug (cached
-in-process). You can pass either form.
-
-**If you ever bypass the bridge:** pass the project slug (e.g.
-`"fangrabs"`), not the UUID.
+**If you ever bypass the bridge:** post `{name, projectSlug, ...}` and
+make sure `projectSlug` is the literal slug, e.g. `"fangrabs"`, not a
+UUID.
 
 ## 2. Comment body key is `comment`, not `content`
 

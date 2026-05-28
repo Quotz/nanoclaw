@@ -118,10 +118,10 @@ out.append('- Interpret error messages from the bridge (which proxies these endp
 out.append('- Discover what features exist beyond the curated tool surface (request bridge additions if needed)')
 out.append('- Look up exact field names/types when the bridge tool description is ambiguous\n')
 out.append('Schema shorthand used below: `field*` = required; `[type]` = array; `|` between values = enum literals; `$Name` = reference to a named schema in `openapi.json`.\n')
-out.append('## Known bugs / workarounds (also see `mcp-quirks.md`)\n')
-out.append('- `POST /api/sprints` — DTO field is named `projectId` but the controller does `findUnique({ where: { slug: <projectId> } })`. The bridge auto-resolves UUID→slug. If you ever shell into the API directly, pass the project SLUG here.')
-out.append('- `POST /api/tasks/{id}/comments` — request body must be `{comment: "..."}`, not `{content: "..."}` (controller binds `@Body(\'comment\')`). The bridge already maps this.')
-out.append('- `GET /api/workspaces` and `GET /api/projects` (top-level) require explicit scope query params (`organizationId=...` / similar) or return 400/403.\n')
+out.append('## Quirks / things to know (also see `mcp-quirks.md`)\n')
+out.append('- `POST /api/sprints` — body field is `projectSlug` (DTO was renamed from the buggy `projectId` in the 2026-05 upstream). The bridge accepts UUID OR slug for its input field and resolves UUID→slug before sending.')
+out.append('- `POST /api/tasks/{id}/comments` — request body is `{comment: "..."}` (controller binds `@Body(\'comment\')`). The bridge maps its `content` input field to `comment` on the wire.')
+out.append('- `GET /api/workspaces` and `GET /api/projects` (top-level) require explicit scope query params (`organizationId=...` / similar) or return 400/403. Use the `*-by-organization` variants the bridge uses.\n')
 
 # Group section
 for g, items in ordered.items():

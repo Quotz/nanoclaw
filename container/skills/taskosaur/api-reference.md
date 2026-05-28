@@ -12,11 +12,11 @@ You normally call Taskosaur through `mcp__taskosaur__*` tools, NOT directly. Thi
 
 Schema shorthand used below: `field*` = required; `[type]` = array; `|` between values = enum literals; `$Name` = reference to a named schema in `openapi.json`.
 
-## Known bugs / workarounds (also see `mcp-quirks.md`)
+## Quirks / things to know (also see `mcp-quirks.md`)
 
-- `POST /api/sprints` — DTO field is named `projectId` but the controller does `findUnique({ where: { slug: <projectId> } })`. The bridge auto-resolves UUID→slug. If you ever shell into the API directly, pass the project SLUG here.
-- `POST /api/tasks/{id}/comments` — request body must be `{comment: "..."}`, not `{content: "..."}` (controller binds `@Body('comment')`). The bridge already maps this.
-- `GET /api/workspaces` and `GET /api/projects` (top-level) require explicit scope query params (`organizationId=...` / similar) or return 400/403.
+- `POST /api/sprints` — body field is `projectSlug` (DTO was renamed from the buggy `projectId` in the 2026-05 upstream). The bridge accepts UUID OR slug for its input field and resolves UUID→slug before sending.
+- `POST /api/tasks/{id}/comments` — request body is `{comment: "..."}` (controller binds `@Body('comment')`). The bridge maps its `content` input field to `comment` on the wire.
+- `GET /api/workspaces` and `GET /api/projects` (top-level) require explicit scope query params (`organizationId=...` / similar) or return 400/403. Use the `*-by-organization` variants the bridge uses.
 
 
 ## auth
@@ -29,13 +29,19 @@ Schema shorthand used below: `field*` = required; `[type]` = array; `|` between 
   - body: `{email*:string, password*:string}`
   - returns: `$AuthResponseDto`
 - **POST `/api/auth/logout`** — User logout
+- **GET `/api/auth/oidc/callback`** — Handle OIDC provider callback
+  - params: `code*@query:string state*@query:string`
+- **GET `/api/auth/oidc/config`** — Check if SSO/OIDC is enabled
+- **POST `/api/auth/oidc/exchange`** — Exchange SSO cookie for tokens
+- **GET `/api/auth/oidc/login`** — Redirect to OIDC provider for login
 - **GET `/api/auth/profile`** — Get current user profile
 - **POST `/api/auth/refresh`** — Refresh access token
-  - body: `{refresh_token*:string}`
+  - body: `{refresh_token:string}`
   - returns: `$AuthResponseDto`
 - **POST `/api/auth/register`** — User registration
-  - body: `{email*:string, password*:string, firstName*:string, lastName*:string, username:string}`
+  - body: `{email*:string, password*:string, firstName*:string, lastName*:string, username:string, invitationToken:string}`
   - returns: `$AuthResponseDto`
+- **GET `/api/auth/registration-status`** — Check if user registration is enabled and org creation settings
 - **POST `/api/auth/reset-password`** — Reset user password with token
   - body: `{token*:string, password*:string, confirmPassword*:string}`
 - **POST `/api/auth/setup`** — Setup super admin user (first-time setup only)
@@ -74,6 +80,8 @@ Schema shorthand used below: `field*` = required; `[type]` = array; `|` between 
   - body: `{userId*:string, organizationId*:string, role:SUPER_ADMIN|OWNER|MANAGER|MEMBER|VIEWER}`
 - **GET `/api/organization-members`** — Get all organization members
   - params: `organizationId@query:string search@query:string`
+- **POST `/api/organization-members/bulk-remove`** — Remove multiple members from organization
+  - body: `{memberIds*:[string]}`
 - **POST `/api/organization-members/invite`** — Invite a user to organization by email
   - body: `{email*:string, organizationId*:string, role:SUPER_ADMIN|OWNER|MANAGER|MEMBER|VIEWER}`
 - **GET `/api/organization-members/organization/{organizationId}/stats`** — Get organization member statistics
@@ -97,7 +105,7 @@ Schema shorthand used below: `field*` = required; `[type]` = array; `|` between 
 ## workspaces
 
 - **POST `/api/workspaces`** — Create a new workspace
-  - body: `{name*:string, slug*:string, description:string, avatar:string, color:string, settings:object, organizationId*:string}`
+  - body: `{name*:string, slug*:string, description:string, avatar:string, color:string, settings:object, organizationId*:string, parentWorkspaceId:string, inheritMembers:boolean, inheritLabels:boolean, inheritWorkflows:boolean}`
 - **GET `/api/workspaces`** — Get all workspaces
   - params: `organizationId@query:string search@query:string`
 - **PATCH `/api/workspaces/archive/{id}`** — Archive a workspace
@@ -114,6 +122,8 @@ Schema shorthand used below: `field*` = required; `[type]` = array; `|` between 
   - params: `organizationId*@query:string search*@query:string`
 - **GET `/api/workspaces/search/paginated`** — Search workspaces with pagination
   - params: `organizationId*@query:string search*@query:string page*@query:string limit*@query:string`
+- **GET `/api/workspaces/tree`** — Get workspace tree for an organization
+  - params: `organizationId*@query:string`
 - **PATCH `/api/workspaces/unarchive/{id}`** — Unarchive a workspace
   - params: `id*@path:string`
 - **GET `/api/workspaces/{id}`** — Get workspace by ID
@@ -123,6 +133,50 @@ Schema shorthand used below: `field*` = required; `[type]` = array; `|` between 
   - body: `{}`
 - **DELETE `/api/workspaces/{id}`** — Delete a workspace
   - params: `id*@path:string`
+- **GET `/api/workspaces/{id}/ancestors`** — Get ancestor chain of a workspace
+  - params: `id*@path:string`
+- **POST `/api/workspaces/{id}/apply-inheritance`** — Apply inheritance from parent workspace
+  - params: `id*@path:string`
+- **GET `/api/workspaces/{workspaceId}/jira-sync`** — Get Jira sync status for a workspace
+  - params: `workspaceId*@path:string`
+- **PATCH `/api/workspaces/{workspaceId}/jira-sync`** — Update Jira sync credentials for a workspace
+  - params: `workspaceId*@path:string`
+  - body: `{jiraSiteUrl*:string, jiraEmail*:string, jiraApiToken*:string}`
+- **DELETE `/api/workspaces/{workspaceId}/jira-sync`** — Disconnect Jira sync from a workspace
+  - params: `workspaceId*@path:string`
+- **POST `/api/workspaces/{workspaceId}/jira-sync/connect`** — Connect a workspace to a Jira account
+  - params: `workspaceId*@path:string`
+  - body: `{jiraSiteUrl*:string, jiraEmail*:string, jiraApiToken*:string}`
+- **POST `/api/workspaces/{workspaceId}/jira-sync/import`** — Import selected Jira projects as Taskosaur projects
+  - params: `workspaceId*@path:string`
+  - body: `{projects*:[string]}`
+- **GET `/api/workspaces/{workspaceId}/jira-sync/projects`** — List available Jira projects for this workspace connection
+  - params: `workspaceId*@path:string`
+- **GET `/api/workspaces/{workspaceId}/jira-sync/projects/{projectKey}/statuses`** — List statuses for a Jira project using workspace connection
+  - params: `workspaceId*@path:string projectKey*@path:string`
+- **POST `/api/workspaces/{workspaceId}/jira-sync/sync-all`** — Trigger sync for all connected projects in the workspace
+  - params: `workspaceId*@path:string`
+- **GET `/api/workspaces/{workspaceId}/jira-sync/synced-projects`** — Get all synced projects in this workspace
+  - params: `workspaceId*@path:string`
+- **GET `/api/workspaces/{workspaceId}/trello-sync`** — Get Trello sync status for a workspace
+  - params: `workspaceId*@path:string`
+- **PATCH `/api/workspaces/{workspaceId}/trello-sync`** — Update Trello sync configuration for a workspace
+  - params: `workspaceId*@path:string`
+  - body: `{trelloApiKey*:string, trelloToken*:string, trelloWorkspaceId:string}`
+- **DELETE `/api/workspaces/{workspaceId}/trello-sync`** — Disconnect Trello sync from a workspace
+  - params: `workspaceId*@path:string`
+- **GET `/api/workspaces/{workspaceId}/trello-sync/boards`** — List available Trello boards for this workspace connection
+  - params: `workspaceId*@path:string`
+- **POST `/api/workspaces/{workspaceId}/trello-sync/connect`** — Connect a workspace to a Trello account
+  - params: `workspaceId*@path:string`
+  - body: `{trelloApiKey*:string, trelloToken*:string, trelloWorkspaceId:string}`
+- **POST `/api/workspaces/{workspaceId}/trello-sync/import`** — Import selected Trello boards as projects in this workspace
+  - params: `workspaceId*@path:string`
+  - body: `{boardIds*:[string]}`
+- **GET `/api/workspaces/{workspaceId}/trello-sync/projects`** — Get all synced projects in this workspace
+  - params: `workspaceId*@path:string`
+- **POST `/api/workspaces/{workspaceId}/trello-sync/sync-all`** — Trigger sync for all connected projects in the workspace
+  - params: `workspaceId*@path:string`
 
 ## workspace-members
 
@@ -130,6 +184,8 @@ Schema shorthand used below: `field*` = required; `[type]` = array; `|` between 
   - body: `{}`
 - **GET `/api/workspace-members`** — Get all workspace members
   - params: `workspaceId@query:string search@query:string page@query:string limit@query:string`
+- **POST `/api/workspace-members/bulk-remove`** — Remove multiple members from workspace
+  - body: `{memberIds*:[string]}`
 - **POST `/api/workspace-members/invite`** — Invite a user to workspace by email
   - body: `{}`
 - **GET `/api/workspace-members/user/{userId}/workspace/{workspaceId}`** — Get membership for a specific user and workspace
@@ -156,6 +212,8 @@ Schema shorthand used below: `field*` = required; `[type]` = array; `|` between 
   - params: `id*@path:string`
 - **GET `/api/projects/archived`** — Get archived projects for a workspace or organization
   - params: `workspaceId@query:string organizationId@query:string`
+- **GET `/api/projects/bulk-health-stats`** — Get bulk project health stats (completion predictor and heatmap)
+  - params: `projectIds*@query:string`
 - **GET `/api/projects/by-organization`** — Get projects by organization
   - params: `organizationId*@query:string workspaceId@query:string status@query:string priority@query:string page@query:string pageSize@query:string search@query:string`
 - **GET `/api/projects/by-slug/{slug}`** — Get project by slug
@@ -219,6 +277,8 @@ Schema shorthand used below: `field*` = required; `[type]` = array; `|` between 
   - body: `{userId*:string, projectId*:string, role:SUPER_ADMIN|OWNER|MANAGER|MEMBER|VIEWER}`
 - **GET `/api/project-members`** — Get all project members
   - params: `projectId@query:string search@query:string page@query:string limit@query:string`
+- **POST `/api/project-members/bulk-remove`** — Remove multiple members from project
+  - body: `{memberIds*:[string]}`
 - **POST `/api/project-members/invite`** — Invite a user to project by email
   - body: `{email*:string, projectId*:string, role:SUPER_ADMIN|OWNER|MANAGER|MEMBER|VIEWER}`
 - **GET `/api/project-members/project/{projectId}/stats`** — Get project member statistics
@@ -242,23 +302,29 @@ Schema shorthand used below: `field*` = required; `[type]` = array; `|` between 
 - **POST `/api/tasks`**
   - body: `{title*:string, description:string, type:TASK|BUG|EPIC|STORY|SUBTASK, priority:LOWEST|LOW|MEDIUM|HIGH|HIGHEST, startDate:date-time, dueDate:date-time, storyPoints:number, originalEstimate:number, remainingEstimate:number, customFields:object, projectId*:string, assigneeIds:[string], … (8 more)}`
 - **GET `/api/tasks`** — Get all tasks with filters
-  - params: `organizationId*@query:string projectId@query:string sprintId@query:string workspaceId@query:string parentTaskId@query:string assigneeIds*@query:string reporterIds*@query:string priorities@query:string statuses@query:string types@query:string search@query:string sortBy@query:string sortOrder@query:string limit@query:? page@query:?`
-- **GET `/api/tasks/all-tasks`** — Get all tasks with filters (no pagination)
-  - params: `organizationId*@query:string projectId@query:string sprintId@query:string workspaceId@query:string parentTaskId@query:string priorities@query:string statuses@query:string types@query:string search@query:string sortBy@query:string sortOrder@query:string`
+  - params: `organizationId*@query:string projectId@query:string sprintId@query:string workspaceId@query:string parentTaskId@query:string assigneeIds*@query:string reporterIds*@query:string priorities@query:string statuses@query:string types@query:string search@query:string sortBy@query:string sortOrder@query:string groupBy@query:string limit@query:? page@query:?`
+- **GET `/api/tasks/all-tasks`** — Get all tasks with filters
+  - params: `organizationId*@query:string projectId@query:string sprintId@query:string workspaceId@query:string parentTaskId@query:string priorities@query:string statuses@query:string types@query:string search@query:string sortBy@query:string sortOrder@query:string page@query:string limit@query:string from*@query:string to*@query:string dateField*@query:string groupBy*@query:string`
 - **POST `/api/tasks/bulk-create`** — Bulk create tasks from CSV import
   - body: `{projectId*:string, statusId*:string, sprintId:string, tasks*:[$BulkTaskItem]}`
 - **POST `/api/tasks/bulk-delete`** — Bulk delete tasks
   - body: `{taskIds:[string], projectId:string, all:boolean, excludedIds:[string]}`
+- **POST `/api/tasks/bulk-status-update`** — Bulk update task status
+  - body: `{taskIds:[string], projectId:string, workspaceId:string, organizationId:string, all:boolean, excludedIds:[string], statusId:string, search:string, statuses:string, priorities:string, types:string, assignees:string, … (2 more)}`
 - **GET `/api/tasks/by-status`** — Get tasks grouped by status with pagination
   - params: `slug*@query:string sprintId@query:string includeSubtasks@query:boolean statusId@query:string page@query:number limit@query:number`
 - **POST `/api/tasks/create-task-attachment`** — Create a new task
   - body: `{title*:string, description:string, type:TASK|BUG|STORY|EPIC|SUBTASK, priority:LOWEST|LOW|MEDIUM|HIGH|HIGHEST, startDate:date-time, dueDate:date-time, storyPoints:number, originalEstimate:number, remainingEstimate:number, customFields:object, projectId*:string, assigneeIds:[string], … (7 more)}`
+- **GET `/api/tasks/grouped`** — Get tasks grouped by a field
+  - params: `organizationId*@query:string groupBy*@query:string workspaceId@query:string projectId@query:string sprintId@query:string priorities@query:string statuses@query:string types@query:string assigneeIds@query:string reporterIds@query:string search@query:string limitPerGroup@query:number groupKey@query:string page@query:number`
 - **GET `/api/tasks/key/{key}`**
   - params: `key*@path:string`
 - **GET `/api/tasks/organization/{orgId}`**
   - params: `orgId*@path:string search*@query:string page*@query:string limit*@query:string`
 - **GET `/api/tasks/recurring/project/{projectId}`** — Get all recurring tasks for a project
   - params: `projectId*@path:string`
+- **GET `/api/tasks/slug/{slug}`**
+  - params: `slug*@path:string`
 - **GET `/api/tasks/today`** — Get today's tasks filtered by assignee/reporter and organization
   - params: `organizationId*@query:string page*@query:string limit*@query:string`
 - **GET `/api/tasks/{id}`**
@@ -286,6 +352,8 @@ Schema shorthand used below: `field*` = required; `[type]` = array; `|` between 
   - body: `{recurrenceType:DAILY|WEEKLY|MONTHLY|QUARTERLY|YEARLY|CUSTOM, interval:number, daysOfWeek:[number], dayOfMonth:number, monthOfYear:number, endType:NEVER|ON_DATE|AFTER_OCCURRENCES, endDate:date-time, occurrenceCount:number}`
 - **DELETE `/api/tasks/{id}/recurrence`** — Stop task recurrence
   - params: `id*@path:string`
+- **PATCH `/api/tasks/{id}/reorder`** — Update relative task rank
+  - params: `id*@path:string`
 - **PATCH `/api/tasks/{id}/status`**
   - params: `id*@path:string`
 - **PATCH `/api/tasks/{id}/unassign`**
@@ -296,11 +364,13 @@ Schema shorthand used below: `field*` = required; `[type]` = array; `|` between 
 ## sprints
 
 - **POST `/api/sprints`** — Create a new sprint
-  - body: `{name*:string, goal:string, status:PLANNING|ACTIVE|COMPLETED|CANCELLED, startDate:date-time, endDate:date-time, projectId*:string}`
+  - body: `{name*:string, goal:string, status:PLANNING|ACTIVE|COMPLETED|CANCELLED, startDate:date-time, endDate:date-time, projectSlug*:string}`
 - **GET `/api/sprints`** — Get all sprints
   - params: `projectId@query:string status@query:string`
 - **PATCH `/api/sprints/archive/{id}`** — Archive a sprint
   - params: `id*@path:string`
+- **GET `/api/sprints/by-slug/{projectSlug}/{sprintSlug}`** — Get sprint by project slug and sprint slug
+  - params: `projectSlug*@path:string sprintSlug*@path:string`
 - **GET `/api/sprints/project/{projectId}/active`** — Get active sprint for a project
   - params: `projectId*@path:string`
 - **GET `/api/sprints/slug`** — Get sprints by project slug
@@ -416,6 +486,7 @@ Schema shorthand used below: `field*` = required; `[type]` = array; `|` between 
   - params: `limit@query:string organizationId@query:string`
 - **GET `/api/notifications/stats/summary`** — Get notification statistics
   - params: `organizationId*@query:string`
+- **GET `/api/notifications/unread-by-organization`** — Get unread notifications count grouped by organization
 - **GET `/api/notifications/unread-count`** — Get unread notifications count
   - params: `organizationId@query:string`
 - **GET `/api/notifications/user/{userId}/organization/{organizationId}`** — Get notifications by user and organization
@@ -479,6 +550,17 @@ Schema shorthand used below: `field*` = required; `[type]` = array; `|` between 
   - returns: `$ChatResponseDto`
 - **DELETE `/api/ai-chat/context/{sessionId}`** — Clear conversation context for a session
   - params: `sessionId*@path:string`
+- **GET `/api/ai-chat/conversations`** — Get all AI conversations
+- **POST `/api/ai-chat/conversations`** — Create a new AI conversation
+  - body: `{title:string, sessionId:string}`
+- **PATCH `/api/ai-chat/conversations/{id}`** — Rename an AI conversation
+  - params: `id*@path:string`
+  - body: `{title*:string}`
+- **DELETE `/api/ai-chat/conversations/{id}`** — Delete an AI conversation
+  - params: `id*@path:string`
+- **PUT `/api/ai-chat/conversations/{id}/messages`** — Update conversation messages
+  - params: `id*@path:string`
+  - body: `{messages*:[$ChatMessageDto]}`
 - **POST `/api/ai-chat/generate-description`** — Generate a task description from a title using AI
   - body: `{title*:string, taskType:string}`
   - returns: `$GenerateDescriptionResponseDto`
@@ -512,6 +594,8 @@ Schema shorthand used below: `field*` = required; `[type]` = array; `|` between 
   - body: `{email:string, mobileNumber:string, username:string, firstName:string, lastName:string, password:string, avatar:string, bio:string, timezone:string, language:string, role:SUPER_ADMIN|OWNER|MANAGER|MEMBER|VIEWER, status:ACTIVE|INACTIVE|SUSPENDED|PENDING, … (3 more)}`
   - returns: `$User`
 - **DELETE `/api/users/{id}`** — Delete a user by ID
+  - params: `id*@path:string`
+- **GET `/api/users/{id}/profile`** — Retrieve public user profile for shared organization members
   - params: `id*@path:string`
 - **GET `/api/users/{id}/status`** — Get online status for a single user
   - params: `id*@path:string`
@@ -553,6 +637,65 @@ Schema shorthand used below: `field*` = required; `[type]` = array; `|` between 
   - params: `workspaceSlug*@path:string projectSlug*@path:string sprintId*@path:string`
 - **GET `/api/public/workspaces/{workspaceSlug}/projects/{projectSlug}/sprints/{sprintId}/tasks`** — Get public sprint tasks
   - params: `workspaceSlug*@path:string projectSlug*@path:string sprintId*@path:string`
+
+## admin
+
+- **GET `/api/admin/config`** — Get all system configuration with env source info
+  - params: `category@query:string`
+- **POST `/api/admin/config`** — Save system configuration settings
+  - body: `{settings:[object]}`
+- **POST `/api/admin/config/test-smtp`** — Test SMTP connection and authentication
+- **GET `/api/admin/dashboard`** — Get system dashboard stats
+- **GET `/api/admin/organizations`** — List all organizations (paginated)
+  - params: `search@query:string limit@query:? page@query:?`
+- **GET `/api/admin/organizations/{id}`** — Get organization detail
+  - params: `id*@path:string`
+- **DELETE `/api/admin/organizations/{id}`** — Delete an organization
+  - params: `id*@path:string`
+- **PATCH `/api/admin/organizations/{id}/archive`** — Suspend or activate an organization (toggle archive)
+  - params: `id*@path:string`
+- **PATCH `/api/admin/organizations/{id}/transfer-ownership`** — Transfer organization ownership to another user
+  - params: `id*@path:string`
+  - body: `{newOwnerId*:string}`
+- **GET `/api/admin/users`** — List all users (paginated)
+  - params: `search@query:string role@query:string status@query:string limit@query:? page@query:?`
+- **GET `/api/admin/users/{id}`** — Get user detail
+  - params: `id*@path:string`
+- **DELETE `/api/admin/users/{id}`** — Delete a user
+  - params: `id*@path:string`
+- **POST `/api/admin/users/{id}/reset-password`** — Generate a password reset link for a user
+  - params: `id*@path:string`
+- **PATCH `/api/admin/users/{id}/role`** — Change user role
+  - params: `id*@path:string`
+  - body: `{role*:SUPER_ADMIN|OWNER|MANAGER|MEMBER|VIEWER}`
+- **PATCH `/api/admin/users/{id}/status`** — Change user status (activate/deactivate)
+  - params: `id*@path:string`
+  - body: `{status*:ACTIVE|INACTIVE|SUSPENDED|PENDING}`
+
+## editor-images
+
+- **POST `/api/editor-images/upload`** — Upload an image for use in editor
+  - body: `{file:string}`
+
+## jira-sync
+
+- **POST `/api/jira-sync/connect`** — Connect a project to a Jira project
+  - body: `{projectId*:string, jiraSiteUrl*:string, jiraProjectKey*:string, jiraEmail*:string, jiraApiToken*:string, syncInterval:number, statusMappings:object}`
+- **POST `/api/jira-sync/validate/projects`** — Validate credentials and list Jira projects
+  - params: `siteUrl*@query:string email*@query:string apiToken*@query:string`
+- **POST `/api/jira-sync/validate/statuses`** — List Jira statuses for a project (pre-connection)
+  - params: `siteUrl*@query:string projectKey*@query:string email*@query:string apiToken*@query:string`
+- **DELETE `/api/jira-sync/{projectId}`** — Disconnect Jira sync from a project
+  - params: `projectId*@path:string`
+- **GET `/api/jira-sync/{projectId}`** — Get Jira sync status for a project
+  - params: `projectId*@path:string`
+- **PATCH `/api/jira-sync/{projectId}`** — Update Jira sync configuration
+  - params: `projectId*@path:string`
+  - body: `{syncEnabled:boolean, syncInterval:number, statusMappings:object}`
+- **GET `/api/jira-sync/{projectId}/statuses`** — List Jira statuses using stored credentials
+  - params: `projectId*@path:string`
+- **POST `/api/jira-sync/{projectId}/sync`** — Manually trigger a Jira sync
+  - params: `projectId*@path:string`
 
 ## other
 
@@ -679,8 +822,17 @@ Schema shorthand used below: `field*` = required; `[type]` = array; `|` between 
 - **POST `/api/task-labels`** — Assign a label to a task
   - body: `{taskId*:string, labelId*:string}`
 - **GET `/api/task-labels`** — Get all task labels
+- **POST `/api/task-labels/assign-multiple`** — Assign multiple labels to a task
+  - body: `{taskId*:string, labelIds*:[string]}`
 - **DELETE `/api/task-labels/{taskId}/{labelId}`** — Remove a label from a task
   - params: `taskId*@path:string labelId*@path:string`
+
+## task-ranks
+
+- **GET `/api/task-ranks/rebalance`**
+- **PATCH `/api/task-ranks/{taskId}/reorder`**
+  - params: `taskId*@path:string`
+  - body: `{}`
 
 ## task-shares
 
@@ -738,8 +890,32 @@ Schema shorthand used below: `field*` = required; `[type]` = array; `|` between 
 - **DELETE `/api/time-entries/{id}`**
   - params: `id*@path:string requestUserId*@query:string`
 
+## trello-sync
+
+- **POST `/api/trello-sync/connect`** — Connect a project to a Trello board
+  - body: `{projectId*:string, trelloBoardId*:string, trelloApiKey*:string, trelloToken*:string, syncInterval:number, statusMappings:object}`
+- **POST `/api/trello-sync/validate/boards`** — Validate credentials and list Trello boards
+  - params: `apiKey*@query:string token*@query:string`
+- **POST `/api/trello-sync/validate/lists`** — List Trello lists for a board (pre-connection)
+  - params: `boardId*@query:string apiKey*@query:string token*@query:string`
+- **DELETE `/api/trello-sync/{projectId}`** — Disconnect Trello sync from a project
+  - params: `projectId*@path:string`
+- **GET `/api/trello-sync/{projectId}`** — Get Trello sync status for a project
+  - params: `projectId*@path:string`
+- **PATCH `/api/trello-sync/{projectId}`** — Update Trello sync configuration
+  - params: `projectId*@path:string`
+  - body: `{syncEnabled:boolean, syncInterval:number, statusMappings:object}`
+- **GET `/api/trello-sync/{projectId}/boards`** — List Trello boards using stored credentials
+  - params: `projectId*@path:string`
+- **GET `/api/trello-sync/{projectId}/lists`** — List Trello lists on the connected board
+  - params: `projectId*@path:string`
+- **POST `/api/trello-sync/{projectId}/sync`** — Manually trigger a Trello sync
+  - params: `projectId*@path:string`
+
 ## uploads
 
+- **GET `/api/uploads/editor-images/{filename}`** — Serve editor image file
+  - params: `filename*@path:string`
 - **GET `/api/uploads/tasks/{taskId}/{filename}`** — Serve task attachment file
   - params: `taskId*@path:string filename*@path:string`
 - **POST `/api/uploads/upload/{folder}`** — Upload and save a file to S3 or Local Storage
@@ -755,6 +931,7 @@ Brief shape of each named schema. For full property docs/descriptions, see `open
 - **`AdvancedSearchDto`** — `{query:string, taskTypes:[string], priorities:[string], assigneeIds:[string], reporterIds:[string], statusIds:[string], labelIds:[string], sprintIds:[string], dueDateFrom:date-time, dueDateTo:date-time, createdFrom:date-time, createdTo:date-time, … (7 more)}`
 - **`AssignLabelDto`** — `{taskId*:string, labelId*:string}`
 - **`AssignMultipleLabelsDto`** — `{taskId*:string, labelIds*:[string]}`
+- **`AssignMultipleTaskLabelsDto`** — `{taskId*:string, labelIds*:[string]}`
 - **`AssignTaskLabelDto`** — `{taskId*:string, labelId*:string}`
 - **`AuthResponseDto`** — `{access_token*:string, refresh_token*:string, user*:object}`
 - **`BulkCreateDependenciesDto`** — `{dependencies*:[$CreateTaskDependencyDto]}`
@@ -763,12 +940,18 @@ Brief shape of each named schema. For full property docs/descriptions, see `open
 - **`BulkEmailDto`** — `{recipients*:[string], subject*:string, template*:string, data*:object, priority:low|normal|high|critical}`
 - **`BulkSetSettingsDto`** — `{settings*:[$SetSettingDto]}`
 - **`BulkTaskItem`** — `{}`
+- **`BulkUpdateTasksStatusDto`** — `{taskIds:[string], projectId:string, workspaceId:string, organizationId:string, all:boolean, excludedIds:[string], statusId:string, search:string, statuses:string, priorities:string, types:string, assignees:string, … (2 more)}`
 - **`BulkUserStatusResponseDto`** — `{status*:object}`
 - **`ChangePasswordDto`** — `{currentPassword*:string, newPassword*:string, confirmPassword*:string}`
 - **`ChatMessageDto`** — `{role*:system|user|assistant, content*:string}`
 - **`ChatRequestDto`** — `{message*:string, history:[$ChatMessageDto], workspaceId:string, projectId:string, sessionId:string, currentOrganizationId:string}`
 - **`ChatResponseDto`** — `{message*:string, success*:boolean, error:string}`
+- **`ConnectJiraDto`** — `{projectId*:string, jiraSiteUrl*:string, jiraProjectKey*:string, jiraEmail*:string, jiraApiToken*:string, syncInterval:number, statusMappings:object}`
+- **`ConnectJiraWorkspaceDto`** — `{jiraSiteUrl*:string, jiraEmail*:string, jiraApiToken*:string}`
+- **`ConnectTrelloDto`** — `{projectId*:string, trelloBoardId*:string, trelloApiKey*:string, trelloToken*:string, syncInterval:number, statusMappings:object}`
+- **`ConnectTrelloWorkspaceDto`** — `{trelloApiKey*:string, trelloToken*:string, trelloWorkspaceId:string}`
 - **`CreateAutomationRuleDto`** — `{name*:string, description:string, triggerType*:string, triggerConfig:object, actionType*:string, actionConfig:object, organizationId:string, workspaceId:string, projectId:string, createdBy*:string, status:ACTIVE|INACTIVE|DRAFT}`
+- **`CreateConversationDto`** — `{title:string, sessionId:string}`
 - **`CreateInboxDto`** — `{name*:string, description:string, emailAddress:string, emailSignature:string, autoReplyEnabled:boolean, autoReplyTemplate:string, syncInterval:string, autoCreateTask:boolean, defaultTaskType:TASK|BUG|EPIC|STORY|SUBTASK, defaultPriority:LOWEST|LOW|MEDIUM|HIGH|HIGHEST, defaultStatusId:string, defaultAssigneeId:string, … (7 more)}`
 - **`CreateInvitationDto`** — `{}`
 - **`CreateLabelDto`** — `{name*:string, color*:string, description:string, projectId*:string}`
@@ -778,7 +961,7 @@ Brief shape of each named schema. For full property docs/descriptions, see `open
 - **`CreateProjectMemberDto`** — `{userId*:string, projectId*:string, role:SUPER_ADMIN|OWNER|MANAGER|MEMBER|VIEWER}`
 - **`CreatePublicTaskShareDto`** — `{taskId*:string, expiresInDays*:1|3|7|14|30}`
 - **`CreateRuleDto`** — `{name*:string, description:string, priority:number, enabled:boolean, conditions*:object, actions*:object, stopOnMatch:boolean}`
-- **`CreateSprintDto`** — `{name*:string, goal:string, status:PLANNING|ACTIVE|COMPLETED|CANCELLED, startDate:date-time, endDate:date-time, projectId*:string}`
+- **`CreateSprintDto`** — `{name*:string, goal:string, status:PLANNING|ACTIVE|COMPLETED|CANCELLED, startDate:date-time, endDate:date-time, projectSlug*:string}`
 - **`CreateTaskCommentDto`** — `{content*:string, taskId*:string, parentCommentId:string}`
 - **`CreateTaskDependencyDto`** — `{type*:BLOCKS|FINISH_START|START_START|FINISH_FINISH|START_FINISH, dependentTaskId*:string, blockingTaskId*:string, createdBy*:string}`
 - **`CreateTaskDto`** — `{title*:string, description:string, type:TASK|BUG|EPIC|STORY|SUBTASK, priority:LOWEST|LOW|MEDIUM|HIGH|HIGHEST, startDate:date-time, dueDate:date-time, storyPoints:number, originalEstimate:number, remainingEstimate:number, customFields:object, projectId*:string, assigneeIds:[string], … (8 more)}`
@@ -788,7 +971,7 @@ Brief shape of each named schema. For full property docs/descriptions, see `open
 - **`CreateTimeEntryDto`** — `{description:string, timeSpent*:number, startTime:date-time, endTime:date-time, date:date-time, taskId*:string, userId*:string}`
 - **`CreateUserDto`** — `{email*:string, mobileNumber:string, username:string, firstName*:string, lastName*:string, password*:string, avatar:string, bio:string, timezone:string, language:string, role:SUPER_ADMIN|OWNER|MANAGER|MEMBER|VIEWER}`
 - **`CreateWorkflowDto`** — `{name*:string, description:string, isDefault:boolean, organizationId*:string}`
-- **`CreateWorkspaceDto`** — `{name*:string, slug*:string, description:string, avatar:string, color:string, settings:object, organizationId*:string}`
+- **`CreateWorkspaceDto`** — `{name*:string, slug*:string, description:string, avatar:string, color:string, settings:object, organizationId*:string, parentWorkspaceId:string, inheritMembers:boolean, inheritLabels:boolean, inheritWorkflows:boolean}`
 - **`CreateWorkspaceMemberDto`** — `{}`
 - **`DefaultProjectDto`** — `{name*:string}`
 - **`DefaultWorkspaceDto`** — `{name*:string}`
@@ -796,6 +979,8 @@ Brief shape of each named schema. For full property docs/descriptions, see `open
 - **`GenerateDescriptionDto`** — `{title*:string, taskType:string}`
 - **`GenerateDescriptionResponseDto`** — `{description*:string, success*:boolean, error:string}`
 - **`GlobalSearchDto`** — `{query*:string, entityType:string, organizationId:string, workspaceId:string, projectId:string, page:number, limit:number, sortBy:relevance|createdAt|updatedAt|title|priority|dueDate, sortOrder:asc|desc}`
+- **`ImportJiraProjectsDto`** — `{projects*:[string]}`
+- **`ImportTrelloBoardsDto`** — `{boardIds*:[string]}`
 - **`InviteOrganizationMemberDto`** — `{email*:string, organizationId*:string, role:SUPER_ADMIN|OWNER|MANAGER|MEMBER|VIEWER}`
 - **`InviteProjectMemberDto`** — `{email*:string, projectId*:string, role:SUPER_ADMIN|OWNER|MANAGER|MEMBER|VIEWER}`
 - **`InviteWorkspaceMemberDto`** — `{}`
@@ -810,8 +995,10 @@ Brief shape of each named schema. For full property docs/descriptions, see `open
 - **`PublicTaskShareResponseDto`** — `{id*:string, token*:string, shareUrl*:string, expiresAt*:date-time, createdAt*:date-time}`
 - **`PublicTaskStatusDto`** — `{id*:string, name*:string, color*:string, category*:string}`
 - **`RecurrenceConfigDto`** — `{recurrenceType*:DAILY|WEEKLY|MONTHLY|QUARTERLY|YEARLY|CUSTOM, interval*:number, daysOfWeek:[number], dayOfMonth:number, monthOfYear:number, endType*:NEVER|ON_DATE|AFTER_OCCURRENCES, endDate:string, occurrenceCount:number}`
-- **`RefreshTokenDto`** — `{refresh_token*:string}`
-- **`RegisterDto`** — `{email*:string, password*:string, firstName*:string, lastName*:string, username:string}`
+- **`RefreshTokenDto`** — `{refresh_token:string}`
+- **`RegisterDto`** — `{email*:string, password*:string, firstName*:string, lastName*:string, username:string, invitationToken:string}`
+- **`RenameConversationDto`** — `{title*:string}`
+- **`ReorderDto`** — `{}`
 - **`ResetPasswordDto`** — `{token*:string, password*:string, confirmPassword*:string}`
 - **`SendEmailDto`** — `{to*:string, subject*:string, template*:string, data*:object, priority:low|normal|high|critical, delay:number}`
 - **`SetSettingDto`** — `{key*:string, value*:string, description:string, category:string, isEncrypted:boolean}`
@@ -825,7 +1012,9 @@ Brief shape of each named schema. For full property docs/descriptions, see `open
 - **`TestConnectionResponseDto`** — `{success*:boolean, message:string, error:string}`
 - **`UnwatchTaskDto`** — `{}`
 - **`UpdateInboxDto`** — `{name*:string, description:string, emailAddress:string, emailSignature:string, autoReplyEnabled:boolean, autoReplyTemplate:string, syncInterval:string, autoCreateTask:boolean, defaultTaskType:TASK|BUG|EPIC|STORY|SUBTASK, defaultPriority:LOWEST|LOW|MEDIUM|HIGH|HIGHEST, defaultStatusId:string, defaultAssigneeId:string, … (7 more)}`
+- **`UpdateJiraSyncDto`** — `{syncEnabled:boolean, syncInterval:number, statusMappings:object}`
 - **`UpdateLabelDto`** — `{}`
+- **`UpdateMessagesDto`** — `{messages*:[$ChatMessageDto]}`
 - **`UpdateOrganizationDto`** — `{slug:string}`
 - **`UpdateOrganizationMemberDto`** — `{userId:string, organizationId:string, role:SUPER_ADMIN|OWNER|MANAGER|MEMBER|VIEWER, isDefault:boolean}`
 - **`UpdatePositionsDto`** — `{}`
@@ -837,7 +1026,10 @@ Brief shape of each named schema. For full property docs/descriptions, see `open
 - **`UpdateTaskDto`** — `{stopRecurrence:boolean}`
 - **`UpdateTaskStatusDto`** — `{}`
 - **`UpdateTimeEntryDto`** — `{}`
+- **`UpdateTrelloSyncDto`** — `{syncEnabled:boolean, syncInterval:number, statusMappings:object}`
 - **`UpdateUserDto`** — `{email:string, mobileNumber:string, username:string, firstName:string, lastName:string, password:string, avatar:string, bio:string, timezone:string, language:string, role:SUPER_ADMIN|OWNER|MANAGER|MEMBER|VIEWER, status:ACTIVE|INACTIVE|SUSPENDED|PENDING, … (3 more)}`
+- **`UpdateUserRoleDto`** — `{role*:SUPER_ADMIN|OWNER|MANAGER|MEMBER|VIEWER}`
+- **`UpdateUserStatusDto`** — `{status*:ACTIVE|INACTIVE|SUSPENDED|PENDING}`
 - **`UpdateWorkflowDto`** — `{}`
 - **`UpdateWorkspaceDto`** — `{}`
 - **`UpdateWorkspaceMemberDto`** — `{}`
