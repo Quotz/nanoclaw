@@ -77,3 +77,20 @@ export function setContinuation(providerName: string, id: string): void {
 export function clearContinuation(providerName: string): void {
   deleteValue(continuationKey(providerName));
 }
+
+/**
+ * When the continuation row was last written. The poll-loop reads this
+ * to decide whether the gap since the previous turn exceeds the idle
+ * reset threshold — long-lived sessions accumulate huge transcripts
+ * that the SDK replays on every resume, and once Hindsight is wired
+ * the per-session transcript no longer needs to carry conversational
+ * continuity.
+ */
+export function getContinuationUpdatedAt(providerName: string): Date | undefined {
+  const row = getOutboundDb()
+    .prepare('SELECT updated_at FROM session_state WHERE key = ?')
+    .get(continuationKey(providerName)) as { updated_at: string } | undefined;
+  if (!row?.updated_at) return undefined;
+  const parsed = new Date(row.updated_at);
+  return Number.isFinite(parsed.getTime()) ? parsed : undefined;
+}

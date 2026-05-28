@@ -2,7 +2,12 @@ import { findByName, getAllDestinations, type DestinationEntry } from './destina
 import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
 import { writeMessageOut } from './db/messages-out.js';
 import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
-import { clearContinuation, migrateLegacyContinuation, setContinuation } from './db/session-state.js';
+import {
+  clearContinuation,
+  getContinuationUpdatedAt,
+  migrateLegacyContinuation,
+  setContinuation,
+} from './db/session-state.js';
 import { clearCurrentInReplyTo, setCurrentInReplyTo } from './current-batch.js';
 import {
   formatMessages,
@@ -17,6 +22,23 @@ import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types
 
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
+
+// If the previous turn (= last continuation write) was longer ago than this,
+// drop the resume id so the next provider.query starts a fresh SDK session.
+// Long-lived resumed sessions replay the full transcript on every turn, which
+// inflates context and eventually triggers SDK auto-compact mid-conversation.
+// Once Hindsight is wired (hooks in providers/claude.ts), conversational
+// continuity comes from recall, not the .jsonl transcript — so resets are
+// cheap and recoverable.
+//
+// Default 3h: long enough that meetings, lunch, and getting-pulled-into-
+// something-else don't unnecessarily fragment a working thread, but short
+// enough to bound runaway transcript growth overnight. Manual /clear is the
+// right tool for "actually new topic, start fresh now." Set to 0 to disable.
+const SESSION_IDLE_RESET_MS = Math.max(
+  0,
+  parseInt(process.env.SESSION_IDLE_RESET_MS || '10800000', 10) || 0,
+);
 
 function log(msg: string): void {
   console.error(`[poll-loop] ${msg}`);
@@ -167,6 +189,24 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
     log(`Processing ${keep.length} message(s), kinds: ${[...new Set(keep.map((m) => m.kind))].join(',')}`);
 
+    // Idle-reset: if too much time has passed since the previous turn, drop
+    // the resume id so the SDK starts a fresh session instead of replaying
+    // the full transcript. Continuity is recovered via Hindsight recall in
+    // providers/claude.ts UserPromptSubmit hook.
+    if (continuation && SESSION_IDLE_RESET_MS > 0) {
+      const lastTurnAt = getContinuationUpdatedAt(config.providerName);
+      if (lastTurnAt) {
+        const gapMs = Date.now() - lastTurnAt.getTime();
+        if (gapMs > SESSION_IDLE_RESET_MS) {
+          log(
+            `Idle reset: ${Math.floor(gapMs / 60_000)}m since last turn > ${Math.floor(SESSION_IDLE_RESET_MS / 60_000)}m threshold — clearing continuation`,
+          );
+          continuation = undefined;
+          clearContinuation(config.providerName);
+        }
+      }
+    }
+
     const query = config.provider.query({
       prompt,
       continuation,
@@ -310,6 +350,28 @@ async function processQuery(
         const newMessages = pending.filter((m) => m.kind !== 'system');
         if (newMessages.length === 0) return;
 
+        // Idle-reset (warm-query case): the outer loop's idle check only
+        // fires on a cold start. A warm container that's been alive for an
+        // hour silently push()es follow-ups into the still-open SDK query,
+        // so the outer check never runs. Re-run the same gap check here
+        // before pushing; if the gap exceeds threshold, end the stream so
+        // the outer loop reclaims these rows and re-issues provider.query
+        // with continuation=undefined.
+        if (SESSION_IDLE_RESET_MS > 0) {
+          const lastTurnAt = getContinuationUpdatedAt(providerName);
+          if (lastTurnAt) {
+            const gapMs = Date.now() - lastTurnAt.getTime();
+            if (gapMs > SESSION_IDLE_RESET_MS) {
+              log(
+                `Idle reset (follow-up): ${Math.floor(gapMs / 60_000)}m since last turn > ${Math.floor(SESSION_IDLE_RESET_MS / 60_000)}m threshold — ending stream for cold restart`,
+              );
+              endedForCommand = true;
+              query.end();
+              return;
+            }
+          }
+        }
+
         const newIds = newMessages.map((m) => m.id);
         markProcessing(newIds);
 
@@ -377,6 +439,14 @@ async function processQuery(
         // (send_message) mid-turn, or the message may not need a response
         // at all — either way the turn is finished.
         markCompleted(initialBatchIds);
+        // Re-stamp the continuation row so its updated_at reflects the
+        // *latest* turn, not just the first init of a long-lived warm
+        // query. The idle-reset checks (outer loop + follow-up polling)
+        // both read this timestamp to decide whether to drop the SDK
+        // session and start fresh.
+        if (queryContinuation) {
+          setContinuation(providerName, queryContinuation);
+        }
         if (event.text) {
           const { hasUnwrapped } = dispatchResultText(event.text, routing);
           if (hasUnwrapped && !unwrappedNudged) {
