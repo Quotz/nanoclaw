@@ -11,6 +11,169 @@ function log(msg: string): void {
   console.error(`[claude-provider] ${msg}`);
 }
 
+// ── Hindsight auto-memory ──
+//
+// The model can't be trusted to remember to call recall/retain (verified
+// empirically on 2026-05-28: 6+ Matrix sessions in a row connected to
+// hindsight, listed tools, never called any). So we wire memory as SDK
+// hooks: UserPromptSubmit hits Hindsight's recall endpoint and returns
+// the matches as additional context; Stop fires a fire-and-forget retain
+// so every substantive turn lands in the bank. The model never sees the
+// plumbing — recall just arrives in its prompt; retain just happens.
+//
+// Soft-fail everywhere: if Hindsight is down or slow, agents behave as
+// they would today (no memory, no breakage).
+const HINDSIGHT_URL = process.env.HINDSIGHT_URL || 'http://host.docker.internal:8888';
+const HINDSIGHT_TENANT = process.env.HINDSIGHT_TENANT || 'default';
+const HINDSIGHT_BANK = process.env.HINDSIGHT_BANK || 'default';
+const HINDSIGHT_RECALL_LIMIT = Math.max(1, parseInt(process.env.HINDSIGHT_RECALL_LIMIT || '5', 10) || 5);
+const HINDSIGHT_RECALL_TIMEOUT_MS = Math.max(500, parseInt(process.env.HINDSIGHT_RECALL_TIMEOUT_MS || '2500', 10) || 2500);
+const HINDSIGHT_RETAIN_TIMEOUT_MS = Math.max(1000, parseInt(process.env.HINDSIGHT_RETAIN_TIMEOUT_MS || '8000', 10) || 8000);
+const HINDSIGHT_MIN_RETAIN_CHARS = Math.max(0, parseInt(process.env.HINDSIGHT_MIN_RETAIN_CHARS || '40', 10) || 40);
+const HINDSIGHT_DISABLED = process.env.HINDSIGHT_DISABLED === '1';
+
+// Holds the last user prompt (human text only) between UserPromptSubmit
+// and Stop so the retain call can pair user+assistant. Single-process
+// agent-runner — no need for per-session keys.
+let lastUserTextForRetain: string | null = null;
+
+const MESSAGE_INNER_RE = /<message\s+[^>]*>([\s\S]*?)<\/message>/g;
+
+/**
+ * The poll-loop sends prompts wrapped in <message from="…" sender="…">
+ * XML blocks (formatter.ts). Strip the wrapping so recall queries are
+ * the actual human text, not metadata noise that pollutes embeddings.
+ * If no <message> blocks are found (e.g. raw slash commands), fall back
+ * to the trimmed prompt.
+ */
+function extractHumanText(prompt: string): string {
+  const parts: string[] = [];
+  let match: RegExpExecArray | null;
+  MESSAGE_INNER_RE.lastIndex = 0;
+  while ((match = MESSAGE_INNER_RE.exec(prompt)) !== null) {
+    const inner = match[1].trim();
+    if (inner) parts.push(inner);
+  }
+  const joined = parts.join('\n').trim();
+  if (joined) return joined.slice(0, 1000);
+  return prompt.trim().slice(0, 1000);
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+interface RecallMemory {
+  text?: string;
+  context?: string;
+  fact_type?: string;
+}
+
+async function hindsightRecall(queryText: string): Promise<string | null> {
+  if (HINDSIGHT_DISABLED) return null;
+  const trimmed = queryText.trim();
+  if (!trimmed) return null;
+  const url = `${HINDSIGHT_URL}/v1/${HINDSIGHT_TENANT}/banks/${HINDSIGHT_BANK}/memories/recall`;
+  try {
+    const res = await fetchWithTimeout(
+      url,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: trimmed, limit: HINDSIGHT_RECALL_LIMIT }),
+      },
+      HINDSIGHT_RECALL_TIMEOUT_MS,
+    );
+    if (!res.ok) {
+      log(`Hindsight recall non-OK ${res.status} (soft-fail)`);
+      return null;
+    }
+    const data = (await res.json()) as { memories?: RecallMemory[]; results?: RecallMemory[] };
+    const mems = data.memories ?? data.results ?? [];
+    if (mems.length === 0) return null;
+    const lines = mems
+      .map((m) => (m.text || '').trim())
+      .filter((t) => t.length > 0)
+      .map((t) => `- ${t}`);
+    return lines.length ? lines.join('\n') : null;
+  } catch (err) {
+    log(`Hindsight recall failed (soft-fail): ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+async function hindsightRetain(userText: string, assistantText: string): Promise<void> {
+  if (HINDSIGHT_DISABLED) return;
+  const uTrim = userText.trim();
+  const aTrim = assistantText.trim();
+  if (!uTrim || !aTrim) return;
+  if (uTrim.length + aTrim.length < HINDSIGHT_MIN_RETAIN_CHARS) return;
+  const content = `User said: ${uTrim}\n\nAgent replied: ${aTrim}`;
+  const url = `${HINDSIGHT_URL}/v1/${HINDSIGHT_TENANT}/banks/${HINDSIGHT_BANK}/memories`;
+  try {
+    const res = await fetchWithTimeout(
+      url,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: [{ content, context: 'Matrix conversation turn', tags: ['matrix', 'auto-retain'] }],
+          async: true,
+        }),
+      },
+      HINDSIGHT_RETAIN_TIMEOUT_MS,
+    );
+    if (!res.ok) {
+      log(`Hindsight retain non-OK ${res.status} (soft-fail)`);
+    }
+  } catch (err) {
+    log(`Hindsight retain failed (soft-fail): ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+const userPromptSubmitHook: HookCallback = async (input) => {
+  const i = input as { prompt?: string };
+  const humanText = extractHumanText(i.prompt || '');
+  lastUserTextForRetain = humanText;
+
+  const recalled = await hindsightRecall(humanText);
+  if (!recalled) return { continue: true };
+
+  const additionalContext = [
+    '<memory-context source="hindsight">',
+    'The following facts may be relevant to this turn. Use them silently — do not announce having looked them up.',
+    '',
+    recalled,
+    '</memory-context>',
+  ].join('\n');
+
+  return {
+    continue: true,
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext,
+    },
+  } as unknown as ReturnType<HookCallback>;
+};
+
+const stopHook: HookCallback = async (input) => {
+  const i = input as { last_assistant_message?: string };
+  const userText = lastUserTextForRetain;
+  lastUserTextForRetain = null;
+  const assistantText = (i.last_assistant_message || '').trim();
+  if (userText && assistantText) {
+    // Fire-and-forget; we do not block the agent's stop on the retain.
+    void hindsightRetain(userText, assistantText);
+  }
+  return { continue: true };
+};
+
 // Deferred SDK builtins that either sidestep nanoclaw's own scheduling or
 // don't fit our async message-passing model (they're designed for Claude
 // Code's interactive UI and would hang here).
@@ -309,6 +472,8 @@ export class ClaudeProvider implements AgentProvider {
           PostToolUse: [{ hooks: [postToolUseHook] }],
           PostToolUseFailure: [{ hooks: [postToolUseHook] }],
           PreCompact: [{ hooks: [createPreCompactHook(this.assistantName)] }],
+          UserPromptSubmit: [{ hooks: [userPromptSubmitHook] }],
+          Stop: [{ hooks: [stopHook] }],
         },
       },
     });
