@@ -39,9 +39,14 @@ Constraints:
 - Diff must be a unified-format patch (standard `git diff` output)
 - Only modifications to existing `.mjs` files (no new files, no deletions, no non-.mjs touches)
 - Max 20KB diff, max 1000-char description
-- Admin approval required. On approve: diff is applied, bridge restarted, health-checked. If healthy → commit + push to GitHub + your container is bounced so your MCP SDK re-lists the new tool surface. If the new bridge fails the health check → the patch is reverted, the bridge is restarted on the previous code, and you're told what failed.
+- Rate-limited: max 5 patches/hour; 1-hour cooldown after any auto-revert
+
+**Autonomous — no admin approval.** When you call `patch_bridge`, the host applies the diff immediately, restarts the bridge, health-checks it, and commits + pushes to GitHub on success. Andrey gets a post-hoc Matrix notification with the commit URL so he can review when he's free.
+
+If the bridge fails its health check after restart, the patch is **auto-reverted** and the bridge restarts on the previous code. You'll be told what failed; Andrey will see the revert in his Matrix DM.
 
 When to use this:
 - You hit a clear bug in a bridge tool (wrong field, missing param) — fix it
 - You see an upstream REST endpoint that would let you do something useful and there's no wrapping tool yet — add one
 - DON'T use it for speculative refactors or aesthetic changes — only material bug fixes / new capabilities
+- DON'T loop-patch: if your last patch was reverted, the cooldown means something deeper is wrong; stop and tell the user instead of trying again

@@ -12,10 +12,12 @@
  * tool validates first. Both layers matter: the DB row carries the payload
  * verbatim through to shell exec on apply.
  */
+import { getDeliveryAdapter } from '../../delivery.js';
 import { getAgentGroup } from '../../db/agent-groups.js';
 import { log } from '../../log.js';
 import type { Session } from '../../types.js';
-import { notifyAgent, requestApproval } from '../approvals/index.js';
+import { notifyAgent, pickApprovalDelivery, pickApprover, requestApproval } from '../approvals/index.js';
+import { applyPatchBridge } from './apply.js';
 
 export async function handleInstallPackages(content: Record<string, unknown>, session: Session): Promise<void> {
   const agentGroup = getAgentGroup(session.agent_group_id);
@@ -94,6 +96,64 @@ function affectedFiles(diff: string): { files: string[]; problems: string[] } {
   return { files: [...files], problems };
 }
 
+// Rate limit state: per-agent-group recent patch attempts. In-memory; resets
+// on NanoClaw restart. Single process, no contention.
+interface PatchRecord {
+  ts: number;
+  reverted: boolean;
+}
+const patchHistory = new Map<string, PatchRecord[]>();
+const RATE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const RATE_HOURLY_LIMIT = 5;
+const REVERT_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour cooldown after a revert
+
+function checkRateLimit(agentGroupId: string): { ok: boolean; reason?: string } {
+  const now = Date.now();
+  const recent = (patchHistory.get(agentGroupId) ?? []).filter((p) => now - p.ts < RATE_WINDOW_MS);
+  patchHistory.set(agentGroupId, recent);
+
+  if (recent.length >= RATE_HOURLY_LIMIT) {
+    return { ok: false, reason: `rate limit: max ${RATE_HOURLY_LIMIT} patches/hour (have ${recent.length} in last hour)` };
+  }
+  const lastReverted = [...recent].reverse().find((p) => p.reverted);
+  if (lastReverted && now - lastReverted.ts < REVERT_COOLDOWN_MS) {
+    const minRemaining = Math.ceil((REVERT_COOLDOWN_MS - (now - lastReverted.ts)) / 60_000);
+    return { ok: false, reason: `cooldown: last patch was reverted; ${minRemaining}m until you can try again` };
+  }
+  return { ok: true };
+}
+
+function recordPatch(agentGroupId: string, reverted: boolean): void {
+  const list = patchHistory.get(agentGroupId) ?? [];
+  list.push({ ts: Date.now(), reverted });
+  patchHistory.set(agentGroupId, list);
+}
+
+async function notifyAdminMatrix(agentGroupId: string, text: string): Promise<void> {
+  const approvers = pickApprover(agentGroupId);
+  const target = await pickApprovalDelivery(approvers, '');
+  if (!target) {
+    log.warn('patch_bridge: no admin DM target for post-hoc notification');
+    return;
+  }
+  const adapter = getDeliveryAdapter();
+  if (!adapter) {
+    log.warn('patch_bridge: no delivery adapter for post-hoc notification');
+    return;
+  }
+  try {
+    await adapter.deliver(
+      target.messagingGroup.channel_type,
+      target.messagingGroup.platform_id,
+      null,
+      'chat',
+      JSON.stringify({ text, sender: 'pero', senderId: 'system' }),
+    );
+  } catch (err) {
+    log.warn('patch_bridge: post-hoc admin notification failed', { err });
+  }
+}
+
 export async function handlePatchBridge(content: Record<string, unknown>, session: Session): Promise<void> {
   const agentGroup = getAgentGroup(session.agent_group_id);
   if (!agentGroup) {
@@ -128,19 +188,42 @@ export async function handlePatchBridge(content: Record<string, unknown>, sessio
     return;
   }
 
-  const truncatedDiff = diff.length > 6_000 ? `${diff.slice(0, 6_000)}\n… [truncated, full diff applied on approve, ${diff.length}B total]` : diff;
-  await requestApproval({
+  const rate = checkRateLimit(session.agent_group_id);
+  if (!rate.ok) {
+    notifyAgent(session, `patch_bridge refused: ${rate.reason}`);
+    log.info('patch_bridge: rate-limited', { agentGroupId: session.agent_group_id, reason: rate.reason });
+    return;
+  }
+
+  // Autonomous apply — no approval gate. Safety net is the validator above
+  // + health-check-with-revert in applyPatchBridge + daily backups + git history.
+  const result = await applyPatchBridge({
     session,
-    agentName: agentGroup.name,
-    action: 'patch_bridge',
     payload: { description, diff, files },
-    title: 'Patch Bridge Request',
-    question:
-      `Agent "${agentGroup.name}" is requesting a patch to taskosaur-mcp:\n` +
-      `Files: ${files.join(', ')}\n` +
-      `Reason: ${description}\n\n` +
-      `\`\`\`diff\n${truncatedDiff}\n\`\`\``,
+    notify: (text) => notifyAgent(session, text),
   });
+
+  recordPatch(session.agent_group_id, result.reverted);
+
+  // Post-hoc admin notification — every attempt, success or failure
+  if (result.ok && result.commitSha) {
+    const short = result.commitSha.slice(0, 7);
+    const summary = description.length > 120 ? `${description.slice(0, 120)}…` : description;
+    await notifyAdminMatrix(
+      session.agent_group_id,
+      `🔧 ${agentGroup.name} applied bridge patch ${short}: ${summary}\nhttps://github.com/Quotz/taskosaur-mcp/commit/${result.commitSha}`,
+    );
+  } else if (result.reverted) {
+    await notifyAdminMatrix(
+      session.agent_group_id,
+      `⚠️ ${agentGroup.name} attempted a bridge patch but it was auto-reverted: ${result.reason ?? 'unknown reason'}`,
+    );
+  } else if (!result.ok) {
+    await notifyAdminMatrix(
+      session.agent_group_id,
+      `❌ ${agentGroup.name}'s bridge patch was rejected at validate-time: ${result.reason ?? 'unknown reason'}`,
+    );
+  }
 }
 
 export async function handleAddMcpServer(content: Record<string, unknown>, session: Session): Promise<void> {

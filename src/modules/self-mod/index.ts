@@ -1,30 +1,21 @@
 /**
- * Self-modification module — admin-approved container + host-service mutations.
+ * Self-modification module — container + host-service mutations.
  *
- * Optional tier. Depends on the approvals default module for the request/
- * handler plumbing. On install the module registers:
- *   - Delivery actions that validate input and queue an approval via
- *     requestApproval().
- *   - Matching approval handlers that run on approve and perform the
- *     complete follow-up:
- *       install_packages → update container.json, rebuild image, kill
- *         container (next wake respawns on the new image), schedule a
- *         verify-and-report follow-up prompt.
- *       add_mcp_server → update container.json, kill container. No image
- *         rebuild — bun runs TS directly, so the new MCP server is wired
- *         by the next container start.
- *       patch_bridge → apply a unified diff to /opt/taskosaur-mcp/, restart
- *         the systemd service, health-check, commit + push, bounce the
- *         agent container so its MCP SDK re-lists tools. Reverts cleanly
- *         on any failure.
+ * Two flavors:
+ *   - **Admin-gated** (install_packages, add_mcp_server): delivery action
+ *     queues an approval card; approval handler runs the change on click.
+ *   - **Autonomous** (patch_bridge): delivery action runs the change
+ *     immediately (validate → apply → health-check → commit + push →
+ *     auto-revert on failure). Admin receives a post-hoc Matrix message
+ *     with the commit URL. Safety net is structural, not human-in-loop.
  *
  * Without this module: the MCP tools in the container still write outbound
  * system messages with these actions, but delivery logs "Unknown system
- * action" and drops them. Admin never sees a card; nothing changes.
+ * action" and drops them. Nothing changes.
  */
 import { registerDeliveryAction } from '../../delivery.js';
 import { registerApprovalHandler } from '../approvals/index.js';
-import { applyAddMcpServer, applyInstallPackages, applyPatchBridge } from './apply.js';
+import { applyAddMcpServer, applyInstallPackages } from './apply.js';
 import { handleAddMcpServer, handleInstallPackages, handlePatchBridge } from './request.js';
 
 registerDeliveryAction('install_packages', handleInstallPackages);
@@ -33,4 +24,4 @@ registerDeliveryAction('patch_bridge', handlePatchBridge);
 
 registerApprovalHandler('install_packages', applyInstallPackages);
 registerApprovalHandler('add_mcp_server', applyAddMcpServer);
-registerApprovalHandler('patch_bridge', applyPatchBridge);
+// patch_bridge has NO approval handler — its delivery action applies directly.
