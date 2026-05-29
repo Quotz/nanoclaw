@@ -1,14 +1,14 @@
 /**
- * Approval handlers for self-modification actions.
+ * Self-modification action implementations.
  *
- * The approvals module calls these when an admin clicks Approve on a
- * pending_approvals row whose action matches. Each handler mutates the
- * container config in the DB, rebuilds/kills the container as needed,
- * and writes an on_wake message so the fresh container picks up where
- * the old one left off.
+ * install_packages + add_mcp_server: still admin-gated (registered as
+ * approval handlers in index.ts). Run on admin click; mutate container
+ * config + restart.
  *
- * install_packages: update DB + rebuild image + kill container + on_wake.
- * add_mcp_server: update DB + kill container + on_wake.
+ * patch_bridge: autonomous — exported as a plain function the delivery
+ * handler in request.ts calls directly, no approval queueing. The safety
+ * net is structural (validation + health-check + auto-revert + git history
+ * + daily backups), not human-in-the-loop.
  */
 import { execFile } from 'child_process';
 import { writeFile, unlink } from 'fs/promises';
@@ -23,6 +23,7 @@ import { getSession } from '../../db/sessions.js';
 import type { McpServerConfig } from '../../container-config.js';
 import { log } from '../../log.js';
 import { writeSessionMessage } from '../../session-manager.js';
+import type { Session } from '../../types.js';
 import type { ApprovalHandler } from '../approvals/index.js';
 
 const execFileP = promisify(execFile);
@@ -112,26 +113,35 @@ export const applyInstallPackages: ApprovalHandler = async ({ session, payload, 
   }
 };
 
-export const applyPatchBridge: ApprovalHandler = async ({ session, payload, userId, notify }) => {
+export interface PatchBridgeResult {
+  ok: boolean;
+  reverted: boolean;
+  commitSha?: string;
+  reason?: string;
+}
+
+export async function applyPatchBridge(args: {
+  session: Session;
+  payload: { description: string; diff: string; files: string[] };
+  notify: (text: string) => void;
+}): Promise<PatchBridgeResult> {
+  const { session, payload, notify } = args;
   const agentGroup = getAgentGroup(session.agent_group_id);
   if (!agentGroup) {
-    notify('patch_bridge approved but agent group missing.');
-    return;
+    notify('patch_bridge: agent group missing.');
+    return { ok: false, reverted: false, reason: 'agent group missing' };
   }
 
-  const description = payload.description as string;
-  const diff = payload.diff as string;
-  const files = (payload.files as string[]) || [];
-
+  const { description, diff, files } = payload;
   const tmpDiff = join(tmpdir(), `patch-bridge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.diff`);
   await writeFile(tmpDiff, diff, 'utf8');
 
   const gitArgs = (...args: string[]): string[] => ['-C', BRIDGE_DIR, ...args];
   const runGit = (...args: string[]) => execFileP('git', gitArgs(...args), { timeout: 10_000 });
 
-  log.info('patch_bridge: applying', { agentGroupId: session.agent_group_id, userId, files, diffBytes: diff.length });
+  log.info('patch_bridge: applying', { agentGroupId: session.agent_group_id, files, diffBytes: diff.length });
 
-  // 1) git apply --check (sanity) then apply for real
+  // 1) git apply --check then apply
   try {
     await runGit('apply', '--check', tmpDiff);
   } catch (e) {
@@ -139,18 +149,19 @@ export const applyPatchBridge: ApprovalHandler = async ({ session, payload, user
     const detail = e instanceof Error ? e.message : String(e);
     notify(`patch_bridge failed: diff doesn't apply cleanly. ${detail.slice(0, 500)}`);
     log.warn('patch_bridge: --check failed', { err: detail });
-    return;
+    return { ok: false, reverted: false, reason: `diff doesn't apply: ${detail.slice(0, 200)}` };
   }
   try {
     await runGit('apply', tmpDiff);
   } catch (e) {
     await unlink(tmpDiff).catch(() => {});
-    notify(`patch_bridge failed during apply: ${e instanceof Error ? e.message : String(e)}`);
-    return;
+    const detail = e instanceof Error ? e.message : String(e);
+    notify(`patch_bridge failed during apply: ${detail}`);
+    return { ok: false, reverted: false, reason: `apply failed: ${detail.slice(0, 200)}` };
   }
   await unlink(tmpDiff).catch(() => {});
 
-  // 2) Restart bridge service (requires sudo NOPASSWD entry on host)
+  // 2) Restart bridge service
   const revertAndRestart = async (reason: string) => {
     log.warn('patch_bridge: reverting', { reason });
     try {
@@ -163,52 +174,53 @@ export const applyPatchBridge: ApprovalHandler = async ({ session, payload, user
   try {
     await execFileP('sudo', ['-n', '/bin/systemctl', 'restart', 'taskosaur-mcp'], { timeout: RESTART_TIMEOUT_MS });
   } catch (e) {
-    await revertAndRestart(`restart failed: ${e instanceof Error ? e.message : String(e)}`);
-    notify(`patch_bridge failed: bridge restart command failed. Reverted. ${e instanceof Error ? e.message : ''}`.slice(0, 500));
-    return;
+    const detail = e instanceof Error ? e.message : String(e);
+    await revertAndRestart(`restart failed: ${detail}`);
+    notify(`patch_bridge failed: bridge restart command failed. Reverted. ${detail}`.slice(0, 500));
+    return { ok: false, reverted: true, reason: `restart failed: ${detail.slice(0, 200)}` };
   }
 
   // 3) Health check
   const health = await bridgeHealthy();
   if (!health.ok) {
     await revertAndRestart(`health failed: ${health.detail}`);
-    notify(`patch_bridge failed: bridge unhealthy after restart (${health.detail}). Reverted to previous version.`);
-    return;
+    notify(`patch_bridge failed: bridge unhealthy after restart (${health.detail}). Reverted.`);
+    return { ok: false, reverted: true, reason: `unhealthy after restart: ${health.detail}` };
   }
 
   // 4) Commit + push
+  let commitSha: string | undefined;
   try {
     await runGit('add', '-A');
-    const commitMsg = `patch_bridge: ${description.slice(0, 200)}\n\nApplied via NanoClaw self-mod approval.\nAgent: ${agentGroup.name}\nApprover-user-id: ${userId}\nFiles: ${files.join(', ')}`;
+    const commitMsg = `patch_bridge: ${description.slice(0, 200)}\n\nApplied autonomously by ${agentGroup.name} via NanoClaw self-mod.\nFiles: ${files.join(', ')}`;
     await execFileP('git', gitArgs('commit', '-m', commitMsg), { timeout: 10_000 });
+    const sha = await runGit('rev-parse', 'HEAD');
+    commitSha = sha.stdout.trim();
   } catch (e) {
-    log.warn('patch_bridge: commit failed (changes applied + live, but not recorded)', { err: e });
-    notify(
-      `patch_bridge: applied + live but local commit failed: ${e instanceof Error ? e.message : String(e)}. Manual git intervention recommended.`,
-    );
-    // Don't bounce agent — they'll see the change anyway. Don't revert — code IS running.
-    return;
+    const detail = e instanceof Error ? e.message : String(e);
+    log.warn('patch_bridge: commit failed (changes applied + live but not recorded)', { err: detail });
+    notify(`patch_bridge: applied + live but local commit failed: ${detail}. Manual git intervention recommended.`);
+    // Don't revert — code IS running. Bounce agent so it sees the new tools.
   }
-  try {
-    await execFileP('git', gitArgs('push'), { timeout: 30_000 });
-  } catch (e) {
-    log.warn('patch_bridge: push failed (committed locally)', { err: e });
-    // Non-fatal; commit landed. Tell admin to investigate.
-    notify(
-      `patch_bridge: applied + committed locally, but push to GitHub failed: ${e instanceof Error ? e.message : String(e)}`,
-    );
+  if (commitSha) {
+    try {
+      await execFileP('git', gitArgs('push'), { timeout: 30_000 });
+    } catch (e) {
+      log.warn('patch_bridge: push failed (committed locally)', { err: e });
+      notify(`patch_bridge: applied + committed locally but push to GitHub failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
-  // 5) On-wake message + bounce agent so its SDK re-lists tools
+  // 5) On-wake message + bounce agent so MCP SDK re-lists tools
   writeSessionMessage(session.agent_group_id, session.id, {
-    id: `appr-note-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id: `patch-note-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     kind: 'chat',
     timestamp: new Date().toISOString(),
     platformId: session.agent_group_id,
     channelType: 'agent',
     threadId: null,
     content: JSON.stringify({
-      text: `Bridge patch applied: ${description}. Verify the tool surface looks right (call \`tools/list\` semantics via a quick check, e.g. run one of the changed tools) and report to the user.`,
+      text: `Bridge patch applied autonomously: ${description}. Verify the tool surface looks right and tell the user what changed.`,
       sender: 'system',
       senderId: 'system',
     }),
@@ -218,12 +230,13 @@ export const applyPatchBridge: ApprovalHandler = async ({ session, payload, user
     const s = getSession(session.id);
     if (s) wakeContainer(s);
   });
-  log.info('patch_bridge: applied + committed + pushed + agent bounced', {
+  log.info('patch_bridge: applied + agent bounced', {
     agentGroupId: session.agent_group_id,
-    userId,
+    commitSha,
     files,
   });
-};
+  return { ok: true, reverted: false, commitSha };
+}
 
 export const applyAddMcpServer: ApprovalHandler = async ({ session, payload, userId, notify }) => {
   const agentGroup = getAgentGroup(session.agent_group_id);
