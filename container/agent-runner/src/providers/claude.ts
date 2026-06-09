@@ -5,7 +5,14 @@ import { query as sdkQuery, type HookCallback, type PreCompactHookInput } from '
 
 import { clearContainerToolInFlight, setContainerToolInFlight } from '../db/connection.js';
 import { registerProvider } from './provider-registry.js';
-import type { AgentProvider, AgentQuery, McpServerConfig, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
+import type {
+  AgentProvider,
+  AgentQuery,
+  McpServerConfig,
+  ProviderEvent,
+  ProviderOptions,
+  QueryInput,
+} from './types.js';
 
 function log(msg: string): void {
   console.error(`[claude-provider] ${msg}`);
@@ -27,8 +34,21 @@ const HINDSIGHT_URL = process.env.HINDSIGHT_URL || 'http://host.docker.internal:
 const HINDSIGHT_TENANT = process.env.HINDSIGHT_TENANT || 'default';
 const HINDSIGHT_BANK = process.env.HINDSIGHT_BANK || 'default';
 const HINDSIGHT_RECALL_LIMIT = Math.max(1, parseInt(process.env.HINDSIGHT_RECALL_LIMIT || '5', 10) || 5);
-const HINDSIGHT_RECALL_TIMEOUT_MS = Math.max(500, parseInt(process.env.HINDSIGHT_RECALL_TIMEOUT_MS || '2500', 10) || 2500);
-const HINDSIGHT_RETAIN_TIMEOUT_MS = Math.max(1000, parseInt(process.env.HINDSIGHT_RETAIN_TIMEOUT_MS || '8000', 10) || 8000);
+// Recall is awaited on UserPromptSubmit (it blocks the turn), so this caps the
+// per-turn latency the memory lookup can add. Default raised 2500 -> 6000 on
+// 2026-06-09: recall latency grows with bank size (measured ~3.86s once the bank
+// had accumulated weeks of per-turn auto-retain, vs ~0.4s when fresh), and the
+// old 2500ms ceiling made every recall abort (soft-fail) so agents silently ran
+// with no memory context. If recall creeps past this again, consolidate/prune
+// the bank rather than just raising the ceiling further.
+const HINDSIGHT_RECALL_TIMEOUT_MS = Math.max(
+  500,
+  parseInt(process.env.HINDSIGHT_RECALL_TIMEOUT_MS || '6000', 10) || 6000,
+);
+const HINDSIGHT_RETAIN_TIMEOUT_MS = Math.max(
+  1000,
+  parseInt(process.env.HINDSIGHT_RETAIN_TIMEOUT_MS || '8000', 10) || 8000,
+);
 const HINDSIGHT_MIN_RETAIN_CHARS = Math.max(0, parseInt(process.env.HINDSIGHT_MIN_RETAIN_CHARS || '40', 10) || 40);
 const HINDSIGHT_DISABLED = process.env.HINDSIGHT_DISABLED === '1';
 
@@ -288,10 +308,15 @@ function parseTranscript(content: string): ParsedMessage[] {
     try {
       const entry = JSON.parse(line);
       if (entry.type === 'user' && entry.message?.content) {
-        const text = typeof entry.message.content === 'string' ? entry.message.content : entry.message.content.map((c: { text?: string }) => c.text || '').join('');
+        const text =
+          typeof entry.message.content === 'string'
+            ? entry.message.content
+            : entry.message.content.map((c: { text?: string }) => c.text || '').join('');
         if (text) messages.push({ role: 'user', content: text });
       } else if (entry.type === 'assistant' && entry.message?.content) {
-        const textParts = entry.message.content.filter((c: { type: string }) => c.type === 'text').map((c: { text: string }) => c.text);
+        const textParts = entry.message.content
+          .filter((c: { type: string }) => c.type === 'text')
+          .map((c: { text: string }) => c.text);
         const text = textParts.join('');
         if (text) messages.push({ role: 'assistant', content: text });
       }
@@ -304,7 +329,13 @@ function parseTranscript(content: string): ParsedMessage[] {
 
 function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | null, assistantName?: string): string {
   const now = new Date();
-  const dateStr = now.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+  const dateStr = now.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
   const lines = [`# ${title || 'Conversation'}`, '', `Archived: ${dateStr}`, '', '---', ''];
   for (const msg of messages) {
     const sender = msg.role === 'user' ? 'User' : assistantName || 'Assistant';
@@ -372,20 +403,29 @@ function createPreCompactHook(assistantName?: string): HookCallback {
       if (fs.existsSync(indexPath)) {
         try {
           const index = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
-          summary = index.entries?.find((e: { sessionId: string; summary?: string }) => e.sessionId === sessionId)?.summary;
+          summary = index.entries?.find(
+            (e: { sessionId: string; summary?: string }) => e.sessionId === sessionId,
+          )?.summary;
         } catch {
           /* ignore */
         }
       }
 
       const name = summary
-        ? summary.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50)
+        ? summary
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '')
+            .slice(0, 50)
         : `conversation-${new Date().getHours().toString().padStart(2, '0')}${new Date().getMinutes().toString().padStart(2, '0')}`;
 
       const conversationsDir = '/workspace/agent/conversations';
       fs.mkdirSync(conversationsDir, { recursive: true });
       const filename = `${new Date().toISOString().split('T')[0]}-${name}.md`;
-      fs.writeFileSync(path.join(conversationsDir, filename), formatTranscriptMarkdown(messages, summary, assistantName));
+      fs.writeFileSync(
+        path.join(conversationsDir, filename),
+        formatTranscriptMarkdown(messages, summary, assistantName),
+      );
       log(`Archived conversation to ${filename}`);
     } catch (err) {
       log(`Failed to archive transcript: ${err instanceof Error ? err.message : String(err)}`);
@@ -453,11 +493,10 @@ export class ClaudeProvider implements AgentProvider {
         additionalDirectories: this.additionalDirectories,
         resume: input.continuation,
         pathToClaudeCodeExecutable: '/pnpm/claude',
-        systemPrompt: instructions ? { type: 'preset' as const, preset: 'claude_code' as const, append: instructions } : undefined,
-        allowedTools: [
-          ...TOOL_ALLOWLIST,
-          ...Object.keys(this.mcpServers).map(mcpAllowPattern),
-        ],
+        systemPrompt: instructions
+          ? { type: 'preset' as const, preset: 'claude_code' as const, append: instructions }
+          : undefined,
+        allowedTools: [...TOOL_ALLOWLIST, ...Object.keys(this.mcpServers).map(mcpAllowPattern)],
         disallowedTools: SDK_DISALLOWED_TOOLS,
         env: this.env,
         model: this.model,
@@ -492,7 +531,7 @@ export class ClaudeProvider implements AgentProvider {
         if (message.type === 'system' && message.subtype === 'init') {
           yield { type: 'init', continuation: message.session_id };
         } else if (message.type === 'result') {
-          const text = 'result' in message ? (message as { result?: string }).result ?? null : null;
+          const text = 'result' in message ? ((message as { result?: string }).result ?? null) : null;
           yield { type: 'result', text };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'api_retry') {
           yield { type: 'error', message: 'API retry', retryable: true };
