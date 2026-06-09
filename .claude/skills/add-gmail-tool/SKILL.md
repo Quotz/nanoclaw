@@ -63,8 +63,10 @@ cat > ~/.gmail-mcp/credentials.json <<'EOF'
   "scope": "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send"
 }
 EOF
-chmod 600 ~/.gmail-mcp/gcp-oauth.keys.json ~/.gmail-mcp/credentials.json
+chmod 644 ~/.gmail-mcp/gcp-oauth.keys.json ~/.gmail-mcp/credentials.json
 ```
+
+**Why `644`, not `600`:** the agent container runs as user `node` (uid 1000), which is frequently a *different* uid than the host user that owns these files (e.g. a `nanoclaw` service user at uid 1500). A `600` file owned by the host user is unreadable inside the container → `EACCES` when the MCP server starts, and the agent silently loses its Gmail tools (or worse, fabricates plausible answers). These stubs hold only `onecli-managed` placeholders — the real token lives in the OneCLI vault — so world-readable `644` is safe. The parent `~/.gmail-mcp` dir must also be traversable by `other` (e.g. `755`). If the stubs already exist from a prior install, re-check their mode (`ls -la ~/.gmail-mcp`) and `chmod 644` them.
 
 ### Verify mount allowlist covers the path
 
@@ -202,15 +204,30 @@ launchctl kickstart -k gui/$(id -u)/$(launchd_label)  # macOS
 systemctl --user restart $(systemd_unit)              # Linux
 ```
 
+> Some installs run the host as a **system** service instead of a user service — e.g. `systemctl restart nanoclaw.service` as root. Use whatever unit your install actually registered (`systemctl --user list-units '*nano*'`, or `ls /etc/systemd/system/ | grep nano`).
+
+**This must be a full host restart — not a container-only restart.** The host process reads `mount-allowlist.json` **once at startup** and caches it in memory. If Phase 1 added a new `allowedRoots` entry for `~/.gmail-mcp`, then restarting only the agent container (`ncl groups restart`) leaves the host using the stale cached allowlist: the `.gmail-mcp` mount keeps getting rejected, the container spawns without the stubs, the MCP server has no creds, and the agent silently lacks — or **hallucinates** — Gmail data. The `systemctl`/`launchctl` restart above reloads the allowlist. Always confirm with un-fabricatable data (Phase 5), not a generic "list my labels" whose answer a model can guess.
+
 ## Phase 5: Verify
 
 ### Test from the wired agent
 
 Tell the user:
 
-> In your `<agent-name>` chat, send: **"list my gmail labels"** or **"search my inbox for invoices from last month"**.
+> In your `<agent-name>` chat, send a query whose answer **can't be guessed** — e.g. **"What's the exact subject and sender of the most recent email in my inbox?"** Don't rely *only* on "list my gmail labels": the default Gmail system labels are well-known, so a model with no working tool can produce a convincing fake and mask a broken mount.
 >
-> The agent should use `mcp__gmail__list_labels` / `mcp__gmail__search`. The first call may take a second or two while the MCP server starts and OneCLI does the token exchange.
+> The agent should use `mcp__gmail__search_emails` / `mcp__gmail__read_email`. The first call may take a second or two while the MCP server starts and OneCLI does the token exchange. **Confirm the reply matches real, specific data.**
+
+### Independently verify the OneCLI side (no agent needed)
+
+This isolates "is OneCLI injecting the token?" from "is the MCP server wired?". Call Gmail through the gateway with the group's agent token:
+
+```bash
+TOKEN=$(onecli agents list | jq -r '.data[] | select(.identifier=="<agentGroupId>") | .accessToken')
+curl -sSk --proxy "http://x:${TOKEN}@<gateway-host>:10255" "https://gmail.googleapis.com/gmail/v1/users/me/profile"
+```
+
+A real `emailAddress` in the response means injection works (`<gateway-host>` is wherever the OneCLI gateway binds, e.g. `172.17.0.1` or `127.0.0.1`).
 
 ### Check logs if the tool isn't working
 
@@ -225,6 +242,8 @@ Common signals:
 - `ENOENT: no such file or directory, open '/workspace/extra/.gmail-mcp/credentials.json'` → mount is missing. Check `~/.config/nanoclaw/mount-allowlist.json` includes a parent of `~/.gmail-mcp`.
 - `401 Unauthorized` from `gmail.googleapis.com` → OneCLI isn't injecting. Check the agent's secret mode (`onecli agents secrets --id <agent-id>`) and that the Gmail app is connected (`onecli apps get --provider gmail`).
 - Agent says "I don't have Gmail tools" → the `gmail` MCP server isn't registered in this group's `mcpServers` (re-run the `ncl groups config add-mcp-server` step in Phase 3 for that group and restart it), or the agent-runner image is stale (rebuild with `./container/build.sh`, with `--no-cache` if suspicious).
+- `EACCES: permission denied, open '/workspace/extra/.gmail-mcp/...'` → the stubs aren't readable by the container user. The container runs as `node` (uid 1000); if the host owner differs (e.g. uid 1500), `chmod 644 ~/.gmail-mcp/*`. Mode `600` only works when the host user's uid happens to match the container's. See Phase 1.
+- `Additional mount REJECTED ... not under any allowed root` in `nanoclaw.error.log` → the host is running on a cached allowlist that predates your `~/.gmail-mcp` entry. Do a **full host restart** (Phase 4), not `ncl groups restart`. The mount is silently absent until you do, which is the classic cause of a confident-but-fabricated first reply.
 
 ## Removal
 
