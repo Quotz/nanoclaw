@@ -57,6 +57,37 @@ function wrapWithDmResolution(adapter: ReturnType<typeof createMatrixAdapter>): 
   // roomId → user handle, used to rewrite inbound channel IDs.
   const roomToUserCache = new Map<string, string>();
 
+  // Seed roomToUserCache from the server's m.direct as soon as the client is
+  // reachable, so inbound DM rewriting (channelIdFromThreadId) works on the very
+  // first message after a restart — BEFORE matrix-js-sdk's initial sync has
+  // populated the local room store. Without this, a DM arriving inside the
+  // post-restart sync window has no local Room, falls through to the raw room-id
+  // channel, and is misclassified as an unregistered "cold DM" instead of
+  // routing to the existing session.
+  void (async () => {
+    for (let i = 0; i < 90; i++) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const client = (adapter as any).client;
+      if (client?.getAccountDataFromServer) {
+        try {
+          const direct = await client.getAccountDataFromServer('m.direct');
+          if (direct && typeof direct === 'object') {
+            for (const [user, rooms] of Object.entries(direct)) {
+              for (const room of (rooms as string[]) || []) {
+                if (typeof room === 'string') roomToUserCache.set(room, user);
+              }
+            }
+            log.info('Matrix: seeded DM room→user cache from m.direct', { entries: roomToUserCache.size });
+            return;
+          }
+        } catch {
+          // client not ready / transient — retry
+        }
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  })();
+
   function isUserHandle(threadId: string): boolean {
     try {
       const { roomID } = adapter.decodeThreadId(threadId);
@@ -71,6 +102,37 @@ function wrapWithDmResolution(adapter: ReturnType<typeof createMatrixAdapter>): 
 
     const userHandle = threadId.startsWith('matrix:') ? threadId.slice('matrix:'.length) : threadId;
     log.info('Matrix: resolving DM room for user handle', { userHandle });
+
+    // Server-truth DM resolution. We bypass adapter.openDM() for the common case
+    // because openDM resolves via the matrix-js-sdk *local* room store
+    // (getRoom()/getMyMembership()), which goes stale after join/leave churn and
+    // then mints duplicate "orphan" DM rooms even when a canonical DM already
+    // exists. Instead we read m.direct straight from the server and reuse the
+    // room listed there (we keep exactly one canonical DM room per peer),
+    // ensuring membership idempotently. openDM remains the fallback only when the
+    // server has no DM mapping yet (genuine first contact).
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const client = (adapter as any).client;
+      if (client?.getAccountDataFromServer) {
+        const direct = await client.getAccountDataFromServer('m.direct');
+        const candidates: string[] = (direct && direct[userHandle]) || [];
+        const roomID = candidates.find((r) => typeof r === 'string' && r.startsWith('!'));
+        if (roomID) {
+          try {
+            await client.joinRoom(roomID);
+          } catch {
+            // already joined / transient — proceed; postMessage surfaces real failures
+          }
+          roomToUserCache.set(roomID, userHandle);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return (adapter as any).encodeThreadId({ roomID });
+        }
+      }
+    } catch (err) {
+      log.warn('Matrix: server-truth DM resolution failed; falling back to openDM', { err });
+    }
+
     const resolved = await adapter.openDM(userHandle);
 
     try {
