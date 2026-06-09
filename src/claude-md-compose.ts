@@ -121,18 +121,25 @@ export function composeGroupClaudeMd(group: AgentGroup): void {
     }
   }
 
-  // Composed entry — imports only.
-  const imports = ['@./.claude-shared.md'];
-  for (const name of [...desired.keys()].sort()) {
-    imports.push(`@./.claude-fragments/${name}`);
-  }
-  const body = [COMPOSED_HEADER, ...imports, ''].join('\n');
-  writeAtomic(path.join(groupDir, 'CLAUDE.md'), body);
-
+  // Ensure per-group memory exists BEFORE we reference it in the import list,
+  // so the composed entry can import it on the very first spawn.
   const localFile = path.join(groupDir, 'CLAUDE.local.md');
   if (!fs.existsSync(localFile)) {
     fs.writeFileSync(localFile, '');
   }
+
+  // Composed entry — imports only. The trailing `@./CLAUDE.local.md` pulls in
+  // per-group memory. Claude Code's implicit CLAUDE.local.md auto-load does NOT
+  // fire for this composed/imported entry point, so without this explicit import
+  // the group's CLAUDE.local.md (its whole memory) never reaches the model.
+  // Imported last so per-group memory can override shared/base guidance.
+  const imports = ['@./.claude-shared.md'];
+  for (const name of [...desired.keys()].sort()) {
+    imports.push(`@./.claude-fragments/${name}`);
+  }
+  imports.push('@./CLAUDE.local.md');
+  const body = [COMPOSED_HEADER, ...imports, ''].join('\n');
+  writeAtomic(path.join(groupDir, 'CLAUDE.md'), body);
 }
 
 /**
