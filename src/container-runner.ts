@@ -52,6 +52,43 @@ const onecli = new OneCLI({ url: ONECLI_URL, apiKey: ONECLI_API_KEY });
 /** Active containers tracked by session ID. */
 const activeContainers = new Map<string, { process: ChildProcess; containerName: string }>();
 
+// Per-container log files. The agent-runner logs to stdout, which used to be
+// discarded, and its stderr went to suppressed debug-level host logging — so a
+// misbehaving turn (e.g. a silent empty turn that produces no reply) left no
+// trace once the --rm container exited. We tee both streams to a host file per
+// spawn so failures are diagnosable after the fact. Not used for IO — all
+// host<->container communication still goes through the session DB.
+const CONTAINER_LOG_DIR = path.resolve(DATA_DIR, '..', 'logs', 'containers');
+const CONTAINER_LOG_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+
+function pruneOldContainerLogs(): void {
+  try {
+    const now = Date.now();
+    for (const f of fs.readdirSync(CONTAINER_LOG_DIR)) {
+      const p = path.join(CONTAINER_LOG_DIR, f);
+      try {
+        if (now - fs.statSync(p).mtimeMs > CONTAINER_LOG_RETENTION_MS) fs.rmSync(p, { force: true });
+      } catch {
+        /* ignore individual file errors */
+      }
+    }
+  } catch {
+    /* dir may not exist yet — nothing to prune */
+  }
+}
+
+function openContainerLog(containerName: string, sessionId: string): fs.WriteStream | undefined {
+  try {
+    fs.mkdirSync(CONTAINER_LOG_DIR, { recursive: true });
+    const stream = fs.createWriteStream(path.join(CONTAINER_LOG_DIR, `${containerName}.log`), { flags: 'a' });
+    stream.write(`\n===== ${new Date().toISOString()} spawn ${containerName} session=${sessionId} =====\n`);
+    return stream;
+  } catch (err) {
+    log.warn('Could not open container log file', { containerName, err });
+    return undefined;
+  }
+}
+
 /**
  * In-flight wake promises, keyed by session id. Deduplicates concurrent
  * `wakeContainer` calls while the first spawn is still mid-setup (async
@@ -154,20 +191,27 @@ async function spawnContainer(session: Session): Promise<void> {
   // immediate kill before the new container touches the file itself.
   fs.rmSync(heartbeatPath(agentGroup.id, session.id), { force: true });
 
+  pruneOldContainerLogs();
+  const containerLog = openContainerLog(containerName, session.id);
+
   const container = spawn(CONTAINER_RUNTIME_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
   activeContainers.set(session.id, { process: container, containerName });
   markContainerRunning(session.id);
 
-  // Log stderr
+  // Log stderr — persist to the per-container file and mirror to host debug.
   container.stderr?.on('data', (data) => {
+    containerLog?.write(data);
     for (const line of data.toString().trim().split('\n')) {
       if (line) log.debug(line, { container: agentGroup.folder });
     }
   });
 
-  // stdout is unused in v2 (all IO is via session DB)
-  container.stdout?.on('data', () => {});
+  // stdout is not used for IO (all host<->container IO is via the session DB),
+  // but it carries the agent-runner's own logging — persist it for diagnosis.
+  container.stdout?.on('data', (data) => {
+    containerLog?.write(data);
+  });
 
   // No host-side idle timeout. Stale/stuck detection is driven by the host
   // sweep reading heartbeat mtime + processing_ack claim age + container_state
@@ -175,6 +219,7 @@ async function spawnContainer(session: Session): Promise<void> {
   // on a wall-clock timer.
 
   container.on('close', (code) => {
+    containerLog?.end();
     activeContainers.delete(session.id);
     markContainerStopped(session.id);
     stopTypingRefresh(session.id);
@@ -182,6 +227,7 @@ async function spawnContainer(session: Session): Promise<void> {
   });
 
   container.on('error', (err) => {
+    containerLog?.end();
     activeContainers.delete(session.id);
     markContainerStopped(session.id);
     stopTypingRefresh(session.id);
