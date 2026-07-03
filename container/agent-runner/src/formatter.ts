@@ -199,7 +199,12 @@ function originAttr(msg: MessageInRow): string {
 function formatTaskMessage(msg: MessageInRow): string {
   const content = parseContent(msg.content);
   const from = originAttr(msg);
-  const time = formatLocalTime(msg.timestamp, TIMEZONE);
+  // A scheduled task FIRES at process_after (its intended run time); msg.timestamp
+  // is when the row was ENQUEUED. For a recurrence-fanned task that enqueue happens
+  // on the PRIOR run, so timestamp reads a day (or more) stale — and the agent can
+  // anchor "today" on this attribute instead of the clock. Prefer the fire time;
+  // fall back to enqueue time for immediate (non-scheduled) tasks.
+  const time = formatLocalTime(msg.process_after ?? msg.timestamp, TIMEZONE);
   const parts: string[] = [];
   if (content.scriptOutput) {
     parts.push('Script output:', JSON.stringify(content.scriptOutput, null, 2), '');
