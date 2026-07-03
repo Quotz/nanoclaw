@@ -41,9 +41,15 @@ const HINDSIGHT_RECALL_LIMIT = Math.max(1, parseInt(process.env.HINDSIGHT_RECALL
 // old 2500ms ceiling made every recall abort (soft-fail) so agents silently ran
 // with no memory context. If recall creeps past this again, consolidate/prune
 // the bank rather than just raising the ceiling further.
+// 2026-07-03: recall measured a steady ~6.3s (graph grown to 1567 nodes /
+// 56.9k links / 211 docs) — the 6000ms ceiling was aborting EVERY recall again.
+// Bumped 6000 -> 10000 as a STOPGAP: recall blocks the turn either way, so a
+// higher ceiling that lets the result land costs ~nothing over the abort. The
+// durable fix is shrinking the graph (prune/consolidate) — it touches the shared
+// bank so it's deferred to a human-in-the-loop pass, not another ceiling bump.
 const HINDSIGHT_RECALL_TIMEOUT_MS = Math.max(
   500,
-  parseInt(process.env.HINDSIGHT_RECALL_TIMEOUT_MS || '6000', 10) || 6000,
+  parseInt(process.env.HINDSIGHT_RECALL_TIMEOUT_MS || '10000', 10) || 10000,
 );
 const HINDSIGHT_RETAIN_TIMEOUT_MS = Math.max(
   1000,
