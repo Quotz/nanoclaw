@@ -99,39 +99,29 @@ onecli agents secrets --id <agent-id>
 ### Check if already applied
 
 ```bash
-grep -q 'GMAIL_MCP_VERSION' container/Dockerfile && \
+grep -q '@gongrzhe/server-gmail-autoauth-mcp' container/cli-tools.json && \
 echo "ALREADY APPLIED — skip to Phase 3"
 ```
 
-### Add MCP server to Dockerfile
+### Add the MCP server to the CLI-tools manifest
 
-Edit `container/Dockerfile`. Find the pinned-version ARG block:
+Global Node CLIs the agent invokes at runtime live in `container/cli-tools.json`,
+not in the Dockerfile — `install-cli-tools.sh` installs each one via a single
+pinned `pnpm install -g`. A skill adds one with a json-merge, which keeps the
+change deterministic and removable. Append two entries:
 
-```dockerfile
-ARG CLAUDE_CODE_VERSION=2.1.116
-ARG AGENT_BROWSER_VERSION=latest
-ARG VERCEL_VERSION=latest
-ARG BUN_VERSION=1.3.12
+```json
+{ "name": "@gongrzhe/server-gmail-autoauth-mcp", "version": "1.1.11" },
+{ "name": "zod-to-json-schema", "version": "3.22.5" }
 ```
 
-Add a new line:
+Neither needs `"onlyBuilt": true` — they have no native postinstall.
 
-```dockerfile
-ARG GMAIL_MCP_VERSION=1.1.11
-```
+Pinned versions matter — the manifest rejects ranges, `minimumReleaseAge` in
+`pnpm-workspace.yaml` gates trunk installs, and CLAUDE.md requires a fixed
+version for every Node CLI installed into the image.
 
-Then find the last pnpm global-install `RUN` block (the one that installs `@anthropic-ai/claude-code`) and add a new block after it, before `# ---- Entrypoint`:
-
-```dockerfile
-RUN --mount=type=cache,target=/root/.cache/pnpm \
-    pnpm install -g \
-        "@gongrzhe/server-gmail-autoauth-mcp@${GMAIL_MCP_VERSION}" \
-        "zod-to-json-schema@3.22.5"
-```
-
-Pinned version matters — `minimumReleaseAge` in `pnpm-workspace.yaml` gates trunk installs, and CLAUDE.md requires a fixed ARG version for all Node CLIs installed into the image.
-
-**Why the `zod-to-json-schema` pin:** `@gongrzhe/server-gmail-autoauth-mcp@1.1.11` has loose deps (`zod-to-json-schema: ^3.22.1`, `zod: ^3.22.4`). pnpm resolves `zod-to-json-schema` to the latest 3.25.x, which imports `zod/v3` — a subpath that only exists in `zod>=3.25`. But `zod` resolves to `3.24.x` (highest satisfying `^3.22.4` without breaking peer ranges). Result: `ERR_PACKAGE_PATH_NOT_EXPORTED` at import time. Pinning `zod-to-json-schema` to a pre-v3-subpath version avoids it. Re-check if you bump `GMAIL_MCP_VERSION`.
+**Why the `zod-to-json-schema` pin:** `@gongrzhe/server-gmail-autoauth-mcp@1.1.11` has loose deps (`zod-to-json-schema: ^3.22.1`, `zod: ^3.22.4`). pnpm resolves `zod-to-json-schema` to the latest 3.25.x, which imports `zod/v3` — a subpath that only exists in `zod>=3.25`. But `zod` resolves to `3.24.x` (highest satisfying `^3.22.4` without breaking peer ranges). Result: `ERR_PACKAGE_PATH_NOT_EXPORTED` at import time. Pinning `zod-to-json-schema` to a pre-v3-subpath version avoids it. Re-check if you bump the gmail-mcp pin in `container/cli-tools.json`.
 
 **No `TOOL_ALLOWLIST` edit needed.** `container/agent-runner/src/providers/claude.ts` derives the allow-pattern dynamically from each group's `mcpServers` map (`Object.keys(this.mcpServers).map(mcpAllowPattern)`), so registering `gmail` in Phase 3 automatically allows `mcp__gmail__*`. Earlier versions of this skill instructed a static `TOOL_ALLOWLIST` edit — that's now redundant.
 
@@ -259,7 +249,7 @@ Common signals:
          updated_at = datetime('now') \
      WHERE agent_group_id = '<group-id>';"
    ```
-3. Remove the `GMAIL_MCP_VERSION` ARG and the `pnpm install -g @gongrzhe/server-gmail-autoauth-mcp` block from `container/Dockerfile`.
+3. Remove the `@gongrzhe/server-gmail-autoauth-mcp` and `zod-to-json-schema` entries from `container/cli-tools.json`.
 4. `pnpm run build && ./container/build.sh && systemctl --user restart "$(. setup/lib/install-slug.sh && systemd_unit)"`.
 5. (Optional) `rm -rf ~/.gmail-mcp/` if no other host-side tool needs the stubs.
 6. (Optional) Disconnect Gmail in OneCLI: `onecli apps disconnect --provider gmail`.
