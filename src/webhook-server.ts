@@ -185,7 +185,10 @@ function ensureServer(): void {
     log.error('Webhook server error', { port, err });
   });
 
-  candidate.listen(port, '0.0.0.0', () => {
+  // Loopback by default: a VPS install otherwise exposes this port publicly.
+  // Channels that need an inbound webhook from the internet opt back in with
+  // WEBHOOK_HOST=0.0.0.0 (Matrix does not — it polls /sync).
+  candidate.listen(port, process.env.WEBHOOK_HOST || '127.0.0.1', () => {
     log.info('Webhook server started', { port, adapters: [...routes.keys()] });
   });
 }

@@ -94,7 +94,11 @@ describe('WEBHOOK_PORT configuration (#2901)', () => {
 
   it('recovers after the configured port is already in use', async () => {
     const occupied = http.createServer();
-    await new Promise<void>((resolve) => occupied.listen(0, '0.0.0.0', resolve));
+    // Occupy the same address the webhook server binds (loopback by default).
+    // A wildcard bind here would not collide: SO_REUSEADDR lets the more
+    // specific 127.0.0.1 bind succeed alongside it, and the port would never
+    // read as in use.
+    await new Promise<void>((resolve) => occupied.listen(0, '127.0.0.1', resolve));
     const address = occupied.address();
     if (!address || typeof address === 'string') throw new Error('Expected an allocated TCP port');
 
