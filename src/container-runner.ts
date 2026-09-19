@@ -1081,6 +1081,12 @@ export function composeSessionSpec(input: ComposeSessionSpecInput): SessionSpec 
     ...(contribution.env ?? {}),
     ...(gateway.env ?? {}),
   };
+  // Fork patch: host-side MCP bridges (hindsight, taskosaur, twenty) are
+  // reached directly — the gateway's HTTP(S)_PROXY resets those connections.
+  const bridgeHosts = 'host.docker.internal,172.17.0.1,localhost,127.0.0.1';
+  for (const key of ['NO_PROXY', 'no_proxy']) {
+    contributedEnv[key] = [contributedEnv[key], bridgeHosts].filter(Boolean).join(',');
+  }
 
   const hostUid = process.getuid?.();
   const hostGid = process.getgid?.();
