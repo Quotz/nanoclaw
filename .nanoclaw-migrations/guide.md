@@ -10,10 +10,13 @@ Goal: shrink the fork. Only what is listed under Keep is carried over.
 - Custom container skill, copy verbatim: container/skills/taskosaur/
 
 ## Modifications to Applied Skills
-### add-matrix: resolve DM room from server m.direct (commit 98f621e8)
-Stops orphan-room churn. Absent from upstream channels branch. Reapply the diff of 98f621e8 onto the
-freshly installed src/channels/matrix.ts, adapting to the async DbDriver API if the adapter changed.
-Also keep bin/repair-matrix-dms.py.
+### add-matrix: resolve DM room from server m.direct (commits 98f621e8 + 9eb9d0f3)
+Stops orphan-room churn. Absent from upstream channels branch. Reapply the diffs of 98f621e8 and 9eb9d0f3
+onto the freshly installed src/channels/matrix.ts, adapting to the async DbDriver API if the adapter changed.
+9eb9d0f3 matters: matrix-js-sdk `getAccountDataFromServer()` returns the local store after initial sync, so
+m.direct must be fetched with a raw `client.http.authedRequest` or a duplicate DM room gets minted.
+Also keep bin/repair-matrix-dms.py and its systemd hook on the VPS:
+`/etc/systemd/system/nanoclaw.service.d/repair-dms.conf` = `ExecStartPre=-/usr/bin/python3 /opt/nanoclaw/bin/repair-matrix-dms.py`.
 
 ## Customizations (core)
 ### Webhook binds to 127.0.0.1 (commit 3c95d9d3)
