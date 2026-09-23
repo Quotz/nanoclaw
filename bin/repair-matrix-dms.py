@@ -32,7 +32,9 @@ q=urllib.parse.quote
 changed=[]
 # 1) m.direct -> canonical
 st, md = call('GET', f'/_matrix/client/v3/user/{q(UID)}/account_data/m.direct')
-if not isinstance(md, dict): md={}
+if st == 0:
+    print("repair-matrix-dms: homeserver unreachable, skipping", file=sys.stderr); sys.exit(0)
+if st != 200 or not isinstance(md, dict): md={}
 if md.get(PEER) != [CANON]:
     md2=dict(md); md2[PEER]=[CANON]
     call('PUT', f'/_matrix/client/v3/user/{q(UID)}/account_data/m.direct', md2)

@@ -70,6 +70,22 @@ function wrapWithDmResolution(adapter: ReturnType<typeof createMatrixAdapter>): 
   // roomId → user handle, used to rewrite inbound channel IDs.
   const roomToUserCache = new Map<string, string>();
 
+  // Read m.direct from the homeserver itself. Not client.getAccountDataFromServer():
+  // despite the name, matrix-js-sdk answers from its local store once the initial
+  // sync is complete, and that store is restored from the adapter's saved-sync
+  // snapshot, so it can lack m.direct entirely. That is how a duplicate DM room
+  // got minted on 2026-09-20. Returns null when the server has no m.direct.
+  async function fetchDirectFromServer(client: any): Promise<Record<string, unknown> | null> {
+    const userId = client.getUserId();
+    if (!userId) throw new Error('Matrix client has no user id yet');
+    try {
+      return await client.http.authedRequest('GET', `/user/${encodeURIComponent(userId)}/account_data/m.direct`);
+    } catch (err: any) {
+      if (err?.errcode === 'M_NOT_FOUND' || err?.data?.errcode === 'M_NOT_FOUND') return null;
+      throw err;
+    }
+  }
+
   // Seed roomToUserCache from the server's m.direct as soon as the client is
   // reachable, so inbound DM rewriting (channelIdFromThreadId) works on the very
   // first message after a restart — BEFORE matrix-js-sdk's initial sync has
@@ -80,24 +96,23 @@ function wrapWithDmResolution(adapter: ReturnType<typeof createMatrixAdapter>): 
   void (async () => {
     for (let i = 0; i < 90; i++) {
       const client = (adapter as any).client;
-      if (client?.getAccountDataFromServer) {
+      if (client?.http) {
         try {
-          const direct = await client.getAccountDataFromServer('m.direct');
-          if (direct && typeof direct === 'object') {
-            for (const [user, rooms] of Object.entries(direct)) {
-              for (const room of (rooms as string[]) || []) {
-                if (typeof room === 'string') roomToUserCache.set(room, user);
-              }
+          const direct = (await fetchDirectFromServer(client)) ?? {};
+          for (const [user, rooms] of Object.entries(direct)) {
+            for (const room of Array.isArray(rooms) ? rooms : []) {
+              if (typeof room === 'string') roomToUserCache.set(room, user);
             }
-            log.info('Matrix: seeded DM room→user cache from m.direct', { entries: roomToUserCache.size });
-            return;
           }
+          log.info('Matrix: seeded DM room→user cache from m.direct', { entries: roomToUserCache.size });
+          return;
         } catch {
           // client not ready / transient — retry
         }
       }
       await new Promise((r) => setTimeout(r, 1000));
     }
+    log.warn('Matrix: could not seed DM room→user cache from m.direct after 90s');
   })();
 
   function isUserHandle(threadId: string): boolean {
@@ -125,10 +140,11 @@ function wrapWithDmResolution(adapter: ReturnType<typeof createMatrixAdapter>): 
     // server has no DM mapping yet (genuine first contact).
     try {
       const client = (adapter as any).client;
-      if (client?.getAccountDataFromServer) {
-        const direct = await client.getAccountDataFromServer('m.direct');
-        const candidates: string[] = (direct && direct[userHandle]) || [];
-        const roomID = candidates.find((r) => typeof r === 'string' && r.startsWith('!'));
+      if (client?.http) {
+        const direct = await fetchDirectFromServer(client);
+        const listed = direct?.[userHandle];
+        const candidates: unknown[] = Array.isArray(listed) ? listed : [];
+        const roomID = candidates.find((r): r is string => typeof r === 'string' && r.startsWith('!'));
         if (roomID) {
           try {
             await client.joinRoom(roomID);
