@@ -12,7 +12,11 @@ mkdir -p /var/lib/ops
 REPORT=() BROKEN=()
 note(){ REPORT+=("$*"); echo "$(date -u +%FT%TZ) $*"; }
 broken(){ BROKEN+=("$*"); note "❌ $*"; }
-probe(){ /usr/local/bin/health-check --probe; }
+# Health probe ignoring things an upgrade can't make worse (backup freshness, the trial bot's
+# pre-existing state). Retries for up to $1 seconds (containers take time after restarts).
+probe(){ local secs=${1:-0} out; for _ in $(seq 0 10 "$secs"); do
+    out=$(/usr/local/bin/health-check --probe | grep '^FAIL' | grep -vE '^FAIL (backup:|hermes)')
+    [ -z "$out" ] && return 0; [ "$secs" -gt 0 ] && sleep 10; done; echo "$out"; return 1; }
 dm(){ /usr/local/bin/matrix-dm "$@" >/dev/null; }
 hub(){ curl -fsS -m 20 "https://hub.docker.com/v2/repositories/$1/tags/$2" | python3 -c 'import sys,json;print(json.load(sys.stdin)["digest"])'; }
 hub_tag(){ curl -fsS -m 20 "https://hub.docker.com/v2/repositories/$1/tags/?page_size=100&ordering=last_updated" |
@@ -93,8 +97,7 @@ for d in /opt/caddy /opt/matrix /opt/taskosaur /home/nanoclaw/.onecli; do
   after=$(dc $d images -q 2>/dev/null | sort)
   [ "$before" != "$after" ] && note "✅ refreshed images in $d"
 done
-sleep 20
-if ! probe >/tmp/auto-update-probe 2>&1; then broken "after image refresh: $(tr '\n' ' ' </tmp/auto-update-probe)"; fi
+if ! probe 300 >/tmp/auto-update-probe 2>&1; then broken "after image refresh: $(tr '\n' ' ' </tmp/auto-update-probe)"; fi
 
 # ── Taskosaur + Twenty (Pero paused so it doesn't hit a half-migrated API) ────
 TC=/opt/taskosaur/docker-compose.yml; WC=/opt/twenty/docker-compose.yml
@@ -136,6 +139,7 @@ if [ ${#BROKEN[@]} -eq 0 ] && [ $((t_up + w_up)) -gt 0 ]; then
         cp /tmp/twenty-compose.bak $WC; dc /opt/twenty stop server worker >/dev/null 2>&1
         docker exec twenty-db psql -U postgres -qc 'DROP DATABASE "default" WITH (FORCE)' -c 'CREATE DATABASE "default"'
         zcat "$BK/twenty-db.sql.gz" | docker exec -i twenty-db psql -U postgres -d default -q >/dev/null
+        docker exec twenty-redis redis-cli FLUSHALL >/dev/null   # drop the newer version's cache
         dc /opt/twenty up -d >/dev/null 2>&1
         if wait_healthy twenty-server 900 && smoke_twenty >/dev/null; then
           note "↩️ Twenty ${tag:-latest} failed verification, rolled back to ${cur:-previous} (DB restored). Reason: ${err:-server unhealthy}"
@@ -181,8 +185,7 @@ fi
 docker image prune -f >/dev/null 2>&1
 
 # ── Verify, escalate, report ──────────────────────────────────────────────────
-sleep 30
-probe >/tmp/auto-update-probe 2>&1 || broken "final health: $(tr '\n' ' ' </tmp/auto-update-probe)"
+probe 600 >/tmp/auto-update-probe 2>&1 || broken "final health: $(tr '\n' ' ' </tmp/auto-update-probe)"
 rm -f "$M"
 reboot_needed=0; [ -e /var/run/reboot-required ] && [ ${#BROKEN[@]} -eq 0 ] && reboot_needed=1
 remaining=$(/usr/local/bin/check-integration-updates --no-send | sed -n '/Updates available:/,/^Up to date/p' | grep '^•')
