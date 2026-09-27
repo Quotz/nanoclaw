@@ -25,7 +25,7 @@ touch "$LAST"
 echo "$(date -u +%FT%TZ) start: ${INCIDENT//$'\n'/ | }"
 
 cd /root
-CLAUDE_CODE_OAUTH_TOKEN=$(cat "$DIR/token") timeout 25m /root/.local/bin/claude -p \
+CLAUDE_CODE_OAUTH_TOKEN=$(tr -d "[:space:]" < "$DIR/token") timeout 25m /root/.local/bin/claude -p \
   "Incident at $(date -u +%FT%TZ):
 $INCIDENT" \
   --append-system-prompt "$(cat /usr/local/lib/ops-claude-prompt.md)" \
@@ -37,7 +37,7 @@ $INCIDENT" \
     "Bash(node /usr/local/lib/mcp-smoke.mjs:*)" "Bash(/usr/local/bin/health-check:*)" \
     "Bash(/usr/local/bin/backup-all:*)" "Bash(/usr/local/bin/matrix-dm:*)" \
   --disallowedTools "Bash(docker volume rm:*)" "Bash(docker system prune:*)" "Bash(rm:*)" "Bash(reboot:*)" \
-  --max-turns 40 --output-format text
+  --max-turns 40 --output-format text </dev/null
 rc=$?
 echo "$(date -u +%FT%TZ) done rc=$rc"
 [ $rc -ne 0 ] && /usr/local/bin/matrix-dm "⚠️ Claude on-call exited with code $rc (timeout or error). Incident still needs a look:
