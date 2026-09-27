@@ -1,0 +1,46 @@
+# VPS ops: health, backups, auto-update, Claude on-call
+
+Everything here is deployed to the VPS (`root@46.225.98.16`) by hand with `scp` (see "Deploy").
+Nothing in NanoClaw's source depends on it.
+
+| What | Where on the VPS | When |
+|------|------------------|------|
+| `health-check` | `/usr/local/bin` | every 10 min. DMs on state change only; after ~30 min of failure it calls `ops-claude` |
+| `backup-all` | `/usr/local/bin` → `/root/backups/nightly/<ts>/` (14 days) | daily 04:00 Belgrade + before every auto-update |
+| `auto-update` | `/usr/local/bin` | Sundays 03:00 Belgrade. Backup → update → verify → roll back → Matrix report → reboot if needed |
+| `ops-claude` + `ops-claude-prompt.md` | `/usr/local/bin`, `/usr/local/lib` | headless Claude Code as root with a restricted tool list, runbook = `.claude/skills/update-integrations/SKILL.md` |
+| `check-integration-updates` (`../`) | `/usr/local/bin` | report only; used by auto-update for the "still needs you" list |
+| `matrix-dm` | `/usr/local/bin` | sends a DM to the owner as @pero |
+| `mcp-smoke.mjs` | `/usr/local/lib` | read-only MCP bridge smoke test |
+| `vps-ops.cron`, `logrotate.conf` | `/etc/cron.d/vps-ops`, `/etc/logrotate.d/vps-ops` | |
+
+Auto-updated: Claude Code, MCP bridges (in-range deps + their git repos), Hindsight, Hermes,
+floating image tags, Taskosaur, Twenty, OneCLI within its current major, Ubuntu packages.
+Reported but not automatic: NanoClaw itself (`/migrate-nanoclaw`) and OneCLI major versions
+(2.x is a redeploy: see the update-integrations skill).
+
+Off-site copy: the Mac runs `laptop-pull-backups.sh` (installed as `~/.local/bin/vps-pull-backups`,
+launchd `com.nanoclaw.vps-backup-pull`, daily 12:00 and at login) into `~/VPS-backups`.
+`health-check` alerts if no pull has happened for 3 days. The backups contain every secret
+(OneCLI DB + encryption key, .env files, Matrix signing key), so keep `~/VPS-backups` out of
+iCloud unless Advanced Data Protection is on.
+
+## Claude on-call token
+
+`ops-claude` needs a long-lived subscription token (the interactive logins on the VPS expire):
+
+```bash
+ssh -t root@46.225.98.16 '/root/.local/bin/claude setup-token'      # follow the browser link, copy the token
+ssh root@46.225.98.16 'umask 077; cat > /root/.config/ops-claude/token'   # paste, Enter, Ctrl-D
+```
+
+Without it, incidents are DMed to you instead.
+
+## Deploy
+
+```bash
+scp bin/ops/{matrix-dm,backup-all,health-check,auto-update,ops-claude} bin/check-integration-updates root@46.225.98.16:/usr/local/bin/
+scp bin/ops/{ops-claude-prompt.md,mcp-smoke.mjs} root@46.225.98.16:/usr/local/lib/
+scp bin/ops/vps-ops.cron root@46.225.98.16:/etc/cron.d/vps-ops
+scp bin/ops/logrotate.conf root@46.225.98.16:/etc/logrotate.d/vps-ops
+```

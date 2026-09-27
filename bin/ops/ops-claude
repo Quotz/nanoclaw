@@ -1,0 +1,45 @@
+#!/bin/bash
+# Hand an incident to headless Claude Code (as root, on Andrey's subscription).
+#   ops-claude "<incident description>"
+# Called by health-check (after ~30 min of failure) and auto-update (when an upgrade's
+# verify fails even after rollback). One run at a time, at most one run per 2h.
+# Token: `claude setup-token` output in /root/.config/ops-claude/token (mode 600).
+set -uo pipefail
+INCIDENT="${1:?incident text}"
+DIR=/root/.config/ops-claude
+LAST=/var/lib/ops/ops-claude.last
+exec 9>/var/lock/ops-claude.lock
+flock -n 9 || { echo "$(date -u +%FT%TZ) already running, skipped"; exit 0; }
+
+if [ ! -s "$DIR/token" ]; then
+  /usr/local/bin/matrix-dm "⚠️ Incident, but Claude on-call has no token (run claude setup-token, see bin/ops/README.md):
+$INCIDENT"
+  exit 1
+fi
+if [ -e "$LAST" ] && [ -n "$(find "$LAST" -mmin -120)" ]; then
+  /usr/local/bin/matrix-dm "⚠️ Still failing, and Claude on-call already ran within the last 2h. Needs you:
+$INCIDENT"
+  exit 0
+fi
+touch "$LAST"
+echo "$(date -u +%FT%TZ) start: ${INCIDENT//$'\n'/ | }"
+
+cd /root
+CLAUDE_CODE_OAUTH_TOKEN=$(cat "$DIR/token") timeout 25m /root/.local/bin/claude -p \
+  "Incident at $(date -u +%FT%TZ):
+$INCIDENT" \
+  --append-system-prompt "$(cat /usr/local/lib/ops-claude-prompt.md)" \
+  --add-dir /opt /etc /var/log /var/lib/ops /home /usr/local /root/backups \
+  --allowedTools "Read" "Grep" "Glob" "Edit" \
+    "Bash(systemctl:*)" "Bash(journalctl:*)" "Bash(docker:*)" "Bash(sudo -u:*)" "Bash(curl:*)" \
+    "Bash(cat:*)" "Bash(tail:*)" "Bash(head:*)" "Bash(grep:*)" "Bash(ls:*)" "Bash(df:*)" "Bash(du:*)" \
+    "Bash(find:*)" "Bash(gunzip:*)" "Bash(zcat:*)" "Bash(tar -t:*)" "Bash(tar -x:*)" "Bash(cp:*)" "Bash(cd:*)" \
+    "Bash(node /usr/local/lib/mcp-smoke.mjs:*)" "Bash(/usr/local/bin/health-check:*)" \
+    "Bash(/usr/local/bin/backup-all:*)" "Bash(/usr/local/bin/matrix-dm:*)" \
+  --disallowedTools "Bash(docker volume rm:*)" "Bash(docker system prune:*)" "Bash(rm:*)" "Bash(reboot:*)" \
+  --max-turns 40 --output-format text
+rc=$?
+echo "$(date -u +%FT%TZ) done rc=$rc"
+[ $rc -ne 0 ] && /usr/local/bin/matrix-dm "⚠️ Claude on-call exited with code $rc (timeout or error). Incident still needs a look:
+$INCIDENT"
+exit $rc

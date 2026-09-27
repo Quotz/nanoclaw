@@ -1,0 +1,70 @@
+#!/bin/bash
+# Every 10 min (cron). Checks services, containers, endpoints, disk and backup freshness.
+# DMs on state change only: a check failing 2 runs in a row -> alert; recovered -> all-clear.
+# Failing 3 runs in a row (~30 min) -> hands the incident to ops-claude once.
+# Skipped while /var/lib/ops/maintenance exists (auto-update sets it), unless it is >3h old.
+#   health-check --probe   run the checks once, print failures, exit 1 if any (no state, no DM)
+set -uo pipefail
+STATE=/var/lib/ops/health
+mkdir -p "$STATE"
+PROBE=0; [ "${1:-}" = --probe ] && PROBE=1
+M=/var/lib/ops/maintenance
+if [ $PROBE -eq 0 ] && [ -e "$M" ] && [ -n "$(find "$M" -mmin -180)" ]; then exit 0; fi
+
+declare -A FAIL=()
+check(){ local name=$1; shift; local out; if ! out=$("$@" 2>&1); then FAIL[$name]="${out:0:200}"; fi; }
+
+unit(){ systemctl is-active --quiet "$1" || { echo "$1 is $(systemctl is-active "$1")"; return 1; }; }
+ctr(){ local s; s=$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' "$1" 2>&1) || { echo "missing"; return 1; }
+       [[ $s == running* && $s != *unhealthy* ]] || { echo "$1: $s"; return 1; }; }
+http(){ local code; code=$(curl -s -o /dev/null -m 15 -w '%{http_code}' "$1"); [[ $code =~ ^[23] ]] || { echo "$1 -> $code"; return 1; }; }
+bridge(){ curl -s -m 10 "$1" | grep -q '"status":"healthy"' || { echo "$1 not healthy"; return 1; }; }
+fresh(){ local f; f=$(find "$1" -maxdepth 1 -mindepth 1 -mmin -1800 | head -1); [ -n "$f" ] || { echo "no backup in $1 for 30h"; return 1; }; }
+disk(){ local p; p=$(df --output=pcent / | tail -1 | tr -dc 0-9); [ "$p" -lt 90 ] || { echo "root disk ${p}% full"; return 1; }; }
+hermes(){ local uid; uid=$(id -u hermes) || return 0
+          sudo -u hermes XDG_RUNTIME_DIR=/run/user/$uid systemctl --user is-active --quiet hermes-gateway || { echo "hermes-gateway down"; return 1; }; }
+
+for u in nanoclaw hindsight-api twenty-mcp taskosaur-mcp docker; do check "unit:$u" unit "$u"; done
+for c in onecli onecli-postgres-1 twenty-server twenty-worker twenty-db twenty-redis taskosaur-app taskosaur-postgres \
+         taskosaur-redis dendrite matrix-postgres edge-caddy; do check "ctr:$c" ctr "$c"; done
+check bridge:twenty    bridge http://127.0.0.1:8890/health
+check bridge:taskosaur bridge http://127.0.0.1:8889/health
+check hindsight        http http://127.0.0.1:8888/health
+check web:twenty       http https://twenty.815431624.xyz/healthz
+check web:taskosaur    http https://taskosaur.815431624.xyz/
+check web:matrix       http https://matrix.815431624.xyz/_matrix/client/versions
+check disk             disk
+[ $PROBE -eq 0 ] && check offsite-backup bash -c '[ -n "$(find /var/lib/ops/offsite-pulled -mmin -4320 2>/dev/null)" ] || { echo "laptop has not pulled backups for 3 days"; exit 1; }'
+check hermes           hermes
+for d in /root/backups/twenty /root/backups/taskosaur /root/backups/nightly /root/.hermes/hindsight-backups; do
+  check "backup:${d##*/}" fresh "$d"; done
+
+if [ $PROBE -eq 1 ]; then
+  for name in "${!FAIL[@]}"; do echo "FAIL $name: ${FAIL[$name]}"; done
+  [ ${#FAIL[@]} -eq 0 ] && echo "all healthy"
+  [ ${#FAIL[@]} -eq 0 ]; exit
+fi
+
+new=() recovered=() escalate=()
+declare -A CUR=()
+for name in "${!FAIL[@]}"; do
+  key=${name//[:\/]/_}; CUR[$key]=1
+  n=$(( $(cat "$STATE/$key" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$STATE/$key"
+  [ "$n" -eq 2 ] && new+=("• $name: ${FAIL[$name]}")
+  [ "$n" -eq 3 ] && [ "$name" != offsite-backup ] && escalate+=("$name: ${FAIL[$name]}")
+done
+for f in "$STATE"/*; do
+  [ -e "$f" ] || continue
+  key=$(basename "$f"); [ -n "${CUR[$key]:-}" ] && continue
+  [ "$(cat "$f")" -ge 2 ] && recovered+=("$key")
+  rm -f "$f"
+done
+
+[ ${#new[@]} -gt 0 ] && printf '🚨 VPS health: something is down\n%s\n(Claude on-call steps in if it is still failing in 10 min.)' \
+  "$(printf '%s\n' "${new[@]}")" | /usr/local/bin/matrix-dm >/dev/null
+[ ${#recovered[@]} -gt 0 ] && /usr/local/bin/matrix-dm "✅ VPS health recovered: ${recovered[*]}" >/dev/null
+if [ ${#escalate[@]} -gt 0 ]; then
+  nohup /usr/local/bin/ops-claude "Health check has been failing for ~30 minutes:
+$(printf '%s\n' "${escalate[@]}")" >> /var/log/ops-claude.log 2>&1 &
+fi
+echo "$(date -u +%FT%TZ) fails=${#FAIL[@]} new=${#new[@]} recovered=${#recovered[@]} escalated=${#escalate[@]}"

@@ -5,7 +5,7 @@ description: Apply updates to the VPS integrations (Twenty, Taskosaur, OneCLI, H
 
 # Update integrations
 
-The VPS runs `/usr/local/bin/check-integration-updates` every Sunday 10:00 Europe/Belgrade (`/etc/cron.d/integration-update-check`, source in `bin/`). It only *reports*: it DMs the owner on Matrix and writes `/var/lib/integration-updates/report.{txt,json}`. This skill applies what it found.
+The VPS updates itself every Sunday 03:00 Europe/Belgrade (`/usr/local/bin/auto-update`, see `bin/ops/README.md`) and DMs a report. Use this skill for what it leaves to a human (NanoClaw, OneCLI major versions), for a failed auto-update, or to update by hand. `check-integration-updates --no-send` lists what is behind.
 
 VPS: `root@46.225.98.16`. **Local rtk hook rewrites inline ssh commands** (`docker` → `rtk docker`): for anything beyond a one-liner, write a script to the scratchpad, `scp` it, run it with `ssh root@46.225.98.16 'bash /root/<script>.sh'`.
 

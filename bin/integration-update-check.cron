@@ -1,7 +1,0 @@
-# Weekly "is anything behind upstream?" check. Informs only (Matrix DM to the owner);
-# apply with /update-integrations in Claude Code. Replaces the old Monday
-# taskosaur-update-check / twenty-update-check crons.
-CRON_TZ=Europe/Belgrade
-SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-0 10 * * 0 root /usr/local/bin/check-integration-updates >> /var/log/integration-update-check.log 2>&1

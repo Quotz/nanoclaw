@@ -31,10 +31,10 @@ src/container-runner.ts `composeSessionSpec`: append `host.docker.internal,172.1
 to NO_PROXY/no_proxy in `contributedEnv`. Without it hindsight/taskosaur/twenty fail with ECONNRESET
 (verified on 2.3.0). Existing containers must be killed to pick it up.
 
-### Weekly integration update check (VPS host, not NanoClaw code)
-`bin/check-integration-updates` -> `/usr/local/bin/`, `bin/integration-update-check.cron` -> `/etc/cron.d/integration-update-check`
-(Sundays 10:00 Belgrade). Reports only, DMs the owner via Pero's Matrix token from `/opt/nanoclaw/.env`.
-Apply with the `/update-integrations` skill. Replaced the old Monday twenty/taskosaur checks (2026-09-27).
+### VPS ops (host scripts, not NanoClaw code)
+`bin/ops/` + `bin/check-integration-updates`: health check every 10 min, nightly backups, Sunday
+auto-update with rollback, headless Claude on-call. Deployed by scp, see `bin/ops/README.md`.
+Runbook skill: `/update-integrations`. Replaced the old Monday twenty/taskosaur checks (2026-09-27).
 
 ## Deploy notes (2.0.64 -> 2.3.0, done 2026-09-19)
 - OneCLI gateway must be >= the versions.json pin; `~/.onecli/.env` needs `ONECLI_BIND_HOST=172.17.0.1` on this VPS.

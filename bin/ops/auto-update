@@ -1,0 +1,200 @@
+#!/bin/bash
+# Sunday auto-update (cron, 03:00 Europe/Belgrade). Order: full backup -> low-risk updates ->
+# Taskosaur -> Twenty -> OneCLI (same major only) -> apt -> verify -> Matrix report.
+# Every step: apply -> verify -> roll back on failure. Anything still broken after a rollback
+# goes to ops-claude. Not automated on purpose: NanoClaw itself (/migrate-nanoclaw) and
+# OneCLI major versions (2.x is a redeploy, see the update-integrations skill).
+#   auto-update [--dry-run]   (--dry-run: report what would change, touch nothing)
+set -uo pipefail
+DRY=0; [ "${1:-}" = --dry-run ] && DRY=1
+M=/var/lib/ops/maintenance
+mkdir -p /var/lib/ops
+REPORT=() BROKEN=()
+note(){ REPORT+=("$*"); echo "$(date -u +%FT%TZ) $*"; }
+broken(){ BROKEN+=("$*"); note "❌ $*"; }
+probe(){ /usr/local/bin/health-check --probe; }
+dm(){ /usr/local/bin/matrix-dm "$@" >/dev/null; }
+hub(){ curl -fsS -m 20 "https://hub.docker.com/v2/repositories/$1/tags/$2" | python3 -c 'import sys,json;print(json.load(sys.stdin)["digest"])'; }
+hub_tag(){ curl -fsS -m 20 "https://hub.docker.com/v2/repositories/$1/tags/?page_size=100&ordering=last_updated" |
+  python3 -c 'import sys,json,re;d,p=sys.argv[1:];print(next((t["name"] for t in json.load(sys.stdin)["results"] if t.get("digest")==d and re.fullmatch(p,t["name"])),""))' "$2" "$3"; }
+wait_healthy(){ local c=$1 secs=$2 s; for _ in $(seq 1 $((secs / 10))); do
+    s=$(docker inspect -f '{{.State.Health.Status}}' "$c" 2>/dev/null); [ "$s" = healthy ] && return 0; sleep 10; done; return 1; }
+wait_http(){ for _ in $(seq 1 $(($2 / 5))); do curl -fsS -m 5 -o /dev/null "$1" && return 0; sleep 5; done; return 1; }
+dc(){ local d=$1; shift; (cd "$d" && docker compose "$@"); }
+smoke_twenty(){ (cd /opt/twenty-mcp && node /usr/local/lib/mcp-smoke.mjs http://127.0.0.1:8890/mcp twenty_whoami \
+  twenty_list_people twenty_list_companies twenty_list_opportunities twenty_list_notes twenty_list_tasks); }
+smoke_taskosaur(){ (cd /opt/taskosaur-mcp && node /usr/local/lib/mcp-smoke.mjs http://127.0.0.1:8889/mcp whoami \
+  list_projects list_tasks list_sprints list_task_statuses list_workspaces); }
+
+if [ $DRY -eq 1 ]; then /usr/local/bin/check-integration-updates --no-send; exit; fi
+
+touch "$M"; trap 'rm -f "$M"' EXIT
+if ! probe >/tmp/auto-update-probe 2>&1; then
+  dm "⏸ Sunday auto-update skipped: the system was not healthy before starting.
+$(cat /tmp/auto-update-probe)"
+  exit 1
+fi
+/root/.hermes/scripts/hindsight-backup.sh >> /var/log/hindsight-backup.log 2>&1
+if ! /usr/local/bin/backup-all; then dm "⏸ Sunday auto-update aborted: backup failed."; exit 1; fi
+BK=$(ls -1d /root/backups/nightly/*/ | tail -1)
+echo "backup: $BK"
+
+# ── Claude Code on the VPS ────────────────────────────────────────────────────
+for u in root nanoclaw; do
+  bin=$(getent passwd $u | cut -d: -f6)/.local/bin/claude; [ -x "$bin" ] || continue
+  old=$(sudo -u $u "$bin" --version 2>/dev/null | cut -d' ' -f1)
+  sudo -iu $u "$bin" update >/dev/null 2>&1
+  new=$(sudo -u $u "$bin" --version 2>/dev/null | cut -d' ' -f1)
+  [ "$old" != "$new" ] && note "✅ Claude Code ($u): $old → $new"
+done
+
+# ── MCP bridges: own git repo + in-range npm deps ─────────────────────────────
+for spec in twenty-mcp:8890:smoke_twenty taskosaur-mcp:8889:smoke_taskosaur; do
+  IFS=: read -r b port smoke <<<"$spec"; d=/opt/$b
+  head0=$(sudo -u $b git -C $d rev-parse HEAD); cp $d/package-lock.json /tmp/$b.lock
+  sudo -u $b git -C $d pull -q --ff-only 2>/dev/null
+  (cd $d && sudo -u $b npm update --cache /tmp/npm-cache-$b --no-audit --no-fund --silent) 2>/dev/null
+  if [ "$(sudo -u $b git -C $d rev-parse HEAD)" = "$head0" ] && cmp -s $d/package-lock.json /tmp/$b.lock; then continue; fi
+  systemctl restart $b; sleep 3
+  if wait_http http://127.0.0.1:$port/health 30 && $smoke >/dev/null; then note "✅ $b updated"
+  else
+    sudo -u $b git -C $d reset -q --hard "$head0"; cp /tmp/$b.lock $d/package-lock.json; chown $b: $d/package-lock.json
+    (cd $d && sudo -u $b npm ci --cache /tmp/npm-cache-$b --no-audit --no-fund --silent); systemctl restart $b; sleep 3
+    if $smoke >/dev/null; then note "↩️ $b update failed its smoke test, rolled back"; else broken "$b broken after rollback"; fi
+  fi
+done
+
+# ── Hindsight ─────────────────────────────────────────────────────────────────
+old=$(sudo -iu hindsight uv tool list 2>/dev/null | grep -oP 'hindsight-api v\K\S+')
+sudo -iu hindsight uv tool upgrade -q hindsight-api >/dev/null 2>&1
+new=$(sudo -iu hindsight uv tool list 2>/dev/null | grep -oP 'hindsight-api v\K\S+')
+if [ -n "$old" ] && [ "$old" != "$new" ]; then
+  systemctl restart hindsight-api
+  if wait_http http://127.0.0.1:8888/health 120; then note "✅ Hindsight $old → $new"
+  else
+    sudo -iu hindsight uv tool install -q --force "hindsight-api==$old" >/dev/null 2>&1; systemctl restart hindsight-api
+    if wait_http http://127.0.0.1:8888/health 120; then note "↩️ Hindsight $new failed to start, rolled back to $old"
+    else broken "Hindsight down after rollback to $old"; fi
+  fi
+fi
+
+# ── Hermes (trial bot, no rollback) ───────────────────────────────────────────
+if id hermes >/dev/null 2>&1; then
+  hv0=$(sudo -iu hermes hermes --version 2>/dev/null | head -1)
+  timeout 20m sudo -iu hermes env XDG_RUNTIME_DIR=/run/user/$(id -u hermes) hermes update --yes --backup </dev/null >/var/log/hermes-update.log 2>&1
+  hv1=$(sudo -iu hermes hermes --version 2>/dev/null | head -1)
+  [ "$hv0" != "$hv1" ] && note "✅ Hermes: ${hv1:-updated} (log /var/log/hermes-update.log)"
+fi
+
+# ── Floating image tags (caddy, postgres/redis patch builds, dendrite:latest) ─
+for d in /opt/caddy /opt/matrix /opt/taskosaur /home/nanoclaw/.onecli; do
+  before=$(dc $d images -q 2>/dev/null | sort)
+  dc $d pull -q >/dev/null 2>&1 && dc $d up -d >/dev/null 2>&1
+  after=$(dc $d images -q 2>/dev/null | sort)
+  [ "$before" != "$after" ] && note "✅ refreshed images in $d"
+done
+sleep 20
+if ! probe >/tmp/auto-update-probe 2>&1; then broken "after image refresh: $(tr '\n' ' ' </tmp/auto-update-probe)"; fi
+
+# ── Taskosaur + Twenty (Pero paused so it doesn't hit a half-migrated API) ────
+TC=/opt/taskosaur/docker-compose.yml; WC=/opt/twenty/docker-compose.yml
+t_pin=$(grep -oP 'taskosaur/taskosaur@\Ksha256:[a-f0-9]+' $TC | head -1); t_new=$(hub taskosaur/taskosaur latest)
+w_pin=$(grep -oP 'twentycrm/twenty@\Ksha256:[a-f0-9]+' $WC | head -1); w_new=$(hub twentycrm/twenty latest)
+t_up=0; [ -n "$t_new" ] && [ "$t_pin" != "$t_new" ] && t_up=1
+w_up=0; [ -n "$w_new" ] && [ "$w_pin" != "$w_new" ] && w_up=1
+if [ ${#BROKEN[@]} -eq 0 ] && [ $((t_up + w_up)) -gt 0 ]; then
+  systemctl stop nanoclaw
+
+  if [ $t_up -eq 1 ]; then
+    tag=$(hub_tag taskosaur/taskosaur "$t_new" '0\.1\.0-[0-9a-f]+'); cp $TC /tmp/taskosaur-compose.bak
+    sed -i "s|taskosaur/taskosaur@$t_pin.*|taskosaur/taskosaur@$t_new  # ${tag:-latest} (auto-updated $(date -u +%F), previous $t_pin)|" $TC
+    dc /opt/taskosaur up -d app >/dev/null 2>&1
+    if wait_healthy taskosaur-app 600 && smoke_taskosaur >/dev/null; then note "✅ Taskosaur → ${tag:-$t_new}"
+    else
+      cp /tmp/taskosaur-compose.bak $TC; dc /opt/taskosaur stop app >/dev/null 2>&1
+      docker exec taskosaur-postgres psql -U taskosaur -d postgres -qc 'DROP DATABASE taskosaur WITH (FORCE)' -c 'CREATE DATABASE taskosaur OWNER taskosaur'
+      zcat "$BK/taskosaur-db.sql.gz" | docker exec -i taskosaur-postgres psql -U taskosaur -d taskosaur -q >/dev/null
+      dc /opt/taskosaur up -d app >/dev/null 2>&1
+      if wait_healthy taskosaur-app 600 && smoke_taskosaur >/dev/null; then note "↩️ Taskosaur ${tag:-latest} failed verification, rolled back (DB restored)"
+      else broken "Taskosaur broken after rollback"; fi
+    fi
+  fi
+
+  if [ $w_up -eq 1 ]; then
+    tag=$(hub_tag twentycrm/twenty "$w_new" 'v\d+\.\d+\.\d+'); cur=$(grep -oP 'twentycrm/twenty@sha256:[a-f0-9]+\s*#\s*\K\S+' $WC | head -1)
+    pgmajor=$(docker exec twenty-db psql -U postgres -tAc 'show server_version' | cut -d. -f1)
+    if [ "${pgmajor:-0}" -lt 15 ]; then note "⏭ Twenty ${tag:-latest} needs Postgres ≥15 (have $pgmajor), skipped"
+    else
+      cp $WC /tmp/twenty-compose.bak
+      sed -i "s|twentycrm/twenty@$w_pin.*|twentycrm/twenty@$w_new  # ${tag:-latest} (auto-updated $(date -u +%F), previous $w_pin ${cur:-})|" $WC
+      dc /opt/twenty up -d >/dev/null 2>&1
+      # Upgrade migrations run on server start; many minors can take a while.
+      if wait_healthy twenty-server 1500 && wait_http https://twenty.815431624.xyz/healthz 60 && smoke_twenty >/dev/null; then
+        note "✅ Twenty ${cur:-} → ${tag:-$w_new}"
+      else
+        err=$(smoke_twenty 2>&1 | tail -1)
+        cp /tmp/twenty-compose.bak $WC; dc /opt/twenty stop server worker >/dev/null 2>&1
+        docker exec twenty-db psql -U postgres -qc 'DROP DATABASE "default" WITH (FORCE)' -c 'CREATE DATABASE "default"'
+        zcat "$BK/twenty-db.sql.gz" | docker exec -i twenty-db psql -U postgres -d default -q >/dev/null
+        dc /opt/twenty up -d >/dev/null 2>&1
+        if wait_healthy twenty-server 900 && smoke_twenty >/dev/null; then
+          note "↩️ Twenty ${tag:-latest} failed verification, rolled back to ${cur:-previous} (DB restored). Reason: ${err:-server unhealthy}"
+        else broken "Twenty broken after rollback to ${cur:-previous}"; fi
+      fi
+    fi
+  fi
+
+  systemctl start nanoclaw
+fi
+
+# ── OneCLI: newest release within the current major only ─────────────────────
+OE=/home/nanoclaw/.onecli/.env
+o_cur=$(grep -oP '^ONECLI_VERSION=\K\S+' $OE)
+o_new=$(curl -fsS -m 20 "https://api.github.com/repos/onecli/onecli/releases?per_page=100" | python3 -c '
+import sys,json; cur=sys.argv[1]; major=cur.split(".")[0]
+vs=[r["tag_name"].lstrip("v") for r in json.load(sys.stdin) if not r.get("prerelease")]
+vs=[v for v in vs if v.split(".")[0]==major and all(p.isdigit() for p in v.split("."))]
+print(max(vs, key=lambda v: tuple(map(int, v.split(".")))) if vs else cur)' "$o_cur")
+if [ ${#BROKEN[@]} -eq 0 ] && [ -n "$o_new" ] && [ "$o_new" != "$o_cur" ] && docker pull -q "ghcr.io/onecli/onecli:$o_new" >/dev/null 2>&1; then
+  CA=/var/lib/docker/volumes/onecli_app-data/_data/gateway/ca.pem; cp $CA /tmp/onecli-ca.before
+  sed -i "s/^ONECLI_VERSION=.*/ONECLI_VERSION=$o_new/" $OE
+  dc /home/nanoclaw/.onecli up -d >/dev/null 2>&1
+  if wait_healthy onecli 300 && sudo -iu nanoclaw onecli agents list >/dev/null 2>&1; then
+    note "✅ OneCLI $o_cur → $o_new"
+    cmp -s $CA /tmp/onecli-ca.before || { cp $CA /home/hermes/.onecli-ca.pem; chown hermes: /home/hermes/.onecli-ca.pem
+      note "⚠️ OneCLI CA changed: re-copied for Hermes"; }
+  else
+    sed -i "s/^ONECLI_VERSION=.*/ONECLI_VERSION=$o_cur/" $OE
+    dc /home/nanoclaw/.onecli up -d >/dev/null 2>&1
+    if wait_healthy onecli 300; then note "↩️ OneCLI $o_new failed verification, rolled back to $o_cur"
+    else broken "OneCLI down after rollback to $o_cur"; fi
+  fi
+fi
+
+# ── Ubuntu packages ───────────────────────────────────────────────────────────
+n=$(apt list --upgradable 2>/dev/null | grep -c /)
+if [ "$n" -gt 0 ]; then
+  DEBIAN_FRONTEND=noninteractive apt-get -qq update && DEBIAN_FRONTEND=noninteractive apt-get -y -qq \
+    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade >/var/log/auto-update-apt.log 2>&1 \
+    && note "✅ Ubuntu: $n packages upgraded" || broken "apt upgrade failed (see /var/log/auto-update-apt.log)"
+fi
+docker image prune -f >/dev/null 2>&1
+
+# ── Verify, escalate, report ──────────────────────────────────────────────────
+sleep 30
+probe >/tmp/auto-update-probe 2>&1 || broken "final health: $(tr '\n' ' ' </tmp/auto-update-probe)"
+rm -f "$M"
+reboot_needed=0; [ -e /var/run/reboot-required ] && [ ${#BROKEN[@]} -eq 0 ] && reboot_needed=1
+remaining=$(/usr/local/bin/check-integration-updates --no-send | sed -n '/Updates available:/,/^Up to date/p' | grep '^•')
+msg="🔧 Sunday auto-update ($(date +%F))
+$( [ ${#REPORT[@]} -gt 0 ] && printf '%s\n' "${REPORT[@]}" || echo "Nothing needed updating.")
+$( [ -n "$remaining" ] && printf 'Still needs you (not auto-updated):\n%s\n' "$remaining")
+$( [ $reboot_needed -eq 1 ] && echo "Rebooting in 2 min for kernel/system updates; health check confirms afterwards.")
+$( [ ${#BROKEN[@]} -gt 0 ] && echo "Handing the broken items to Claude on-call now.")"
+dm "$msg"
+if [ ${#BROKEN[@]} -gt 0 ]; then
+  /usr/local/bin/ops-claude "Sunday auto-update left things broken (backup taken before: $BK, log /var/log/auto-update.log):
+$(printf '%s\n' "${BROKEN[@]}")" >> /var/log/ops-claude.log 2>&1
+elif [ $reboot_needed -eq 1 ]; then
+  shutdown -r +2 "auto-update reboot"
+fi
