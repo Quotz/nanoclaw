@@ -1,7 +1,7 @@
 #!/bin/bash
 # Sunday auto-update (cron, 03:00 Europe/Belgrade). Order: full backup -> low-risk updates ->
 # Taskosaur -> Twenty -> OneCLI (same major only) -> apt -> verify -> Matrix report.
-# Every step: apply -> verify -> roll back on failure. Anything still broken after a rollback
+# Every step: apply -> verify -> roll back on failure. Messages Matrix only on failures/rollbacks. Anything still broken after a rollback
 # goes to ops-claude. Not automated on purpose: NanoClaw itself (/migrate-nanoclaw) and
 # OneCLI major versions (2.x is a redeploy, see the update-integrations skill).
 #   auto-update [--dry-run]   (--dry-run: report what would change, touch nothing)
@@ -194,7 +194,10 @@ $( [ ${#REPORT[@]} -gt 0 ] && printf '%s\n' "${REPORT[@]}" || echo "Nothing need
 $( [ -n "$remaining" ] && printf 'Still needs you (not auto-updated):\n%s\n' "$remaining")
 $( [ $reboot_needed -eq 1 ] && echo "Rebooting in 2 min for kernel/system updates; health check confirms afterwards.")
 $( [ ${#BROKEN[@]} -gt 0 ] && echo "Handing the broken items to Claude on-call now.")"
-dm "$msg"
+echo "$msg" > /var/lib/ops/last-update-report.txt
+# Alarms only: DM when something failed, was rolled back or needs attention. A clean run stays silent
+# (the full report is in /var/lib/ops/last-update-report.txt).
+if [ ${#BROKEN[@]} -gt 0 ] || printf '%s\n' "${REPORT[@]}" | grep -qE '^(↩️|⚠️|❌)'; then dm "$msg"; fi
 if [ ${#BROKEN[@]} -gt 0 ]; then
   /usr/local/bin/ops-claude "Sunday auto-update left things broken (backup taken before: $BK, log /var/log/auto-update.log):
 $(printf '%s\n' "${BROKEN[@]}")" >> /var/log/ops-claude.log 2>&1

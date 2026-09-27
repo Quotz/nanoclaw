@@ -7,7 +7,7 @@ Nothing in NanoClaw's source depends on it.
 |------|------------------|------|
 | `health-check` | `/usr/local/bin` | every 10 min. DMs on state change only; after ~30 min of failure it calls `ops-claude` |
 | `backup-all` | `/usr/local/bin` → `/root/backups/nightly/<ts>/` (14 days) | daily 04:00 Belgrade + before every auto-update |
-| `auto-update` | `/usr/local/bin` | Sundays 03:00 Belgrade. Backup → update → verify → roll back → Matrix report → reboot if needed |
+| `auto-update` | `/usr/local/bin` | Sundays 03:00 Belgrade. Backup → update → verify → roll back → reboot if needed. DMs only on failure/rollback; full report in `/var/lib/ops/last-update-report.txt` |
 | `ops-claude` + `ops-claude-prompt.md` | `/usr/local/bin`, `/usr/local/lib` | headless Claude Code as root with a restricted tool list, runbook = `.claude/skills/update-integrations/SKILL.md` |
 | `check-integration-updates` (`../`) | `/usr/local/bin` | report only; used by auto-update for the "still needs you" list |
 | `matrix-dm` | `/usr/local/bin` | sends a DM to the owner as @pero |
