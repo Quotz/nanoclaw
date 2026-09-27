@@ -43,7 +43,7 @@ Same tag, newer build. Per compose project (`/opt/caddy`, `/opt/matrix`, `/opt/t
 
 ### OneCLI gateway — medium
 All agent credentials go through it; an outage breaks every API call Pero makes.
-1. Read the release notes between the current and target version (github.com/onecli/onecli/releases). A **major** bump (1.x → 2.x) may need a NanoClaw-side `@onecli-sh/sdk` bump: check what the current NanoClaw upstream pins, and prefer doing the NanoClaw upgrade first.
+1. Within 1.x auto-update handles it (1.45.0 is the last single-image release). **2.x is a redeploy, not a bump**: the single `ghcr.io/onecli/onecli` image is split into migrations/api/web/gateway images (`onecli:2.x` does not exist), the `/data/secret-encryption-key` must move into `.env` as `SECRET_ENCRYPTION_KEY` or every secret becomes unreadable, `NEXTAUTH_SECRET` → `BETTER_AUTH_SECRET`, a new `GATEWAY_INTERNAL_SECRET`, an account must be registered right after first boot (first registrant owns the data), `ONECLI_API_KEY` becomes mandatory and the API moves to `:10256` `/v1`. Follow `docs/self-hosting.md` ("Upgrading from a pre-login release") in the onecli repo, and do the NanoClaw upgrade first so the host's `@onecli-sh/sdk` speaks `/v1`. The schema migration is one-way: the DB dump + app-data volume tarball are the only rollback.
 2. Backup: `docker exec onecli-postgres-1 pg_dumpall -U postgres | gzip > /root/backups/onecli-pre-<v>-<date>/db.sql.gz` and copy `~nanoclaw/.onecli/.env` + `docker-compose.yml`.
 3. Set `ONECLI_VERSION=<v>` in `~nanoclaw/.onecli/.env` (keep `ONECLI_BIND_HOST=172.17.0.1`), `docker compose pull && docker compose up -d` in `~nanoclaw/.onecli` as `nanoclaw`.
 4. Verify: `onecli agents list` works; the gateway CA is unchanged (`cmp` the volume's `gateway/ca.pem` against `~hermes/.onecli-ca.pem`, re-copy if it changed); Pero can read Gmail; Hermes Gmail still works.
@@ -59,10 +59,10 @@ The runbook lives in the comment above `image:` in `/opt/taskosaur/docker-compos
 
 ### Twenty CRM — high
 Twenty ships several releases a week and its REST shapes shift across minors. The pinned digest and version label are in `/opt/twenty/docker-compose.yml` (`# vX.Y.Z` comment).
-1. Read the upgrade guide (twenty.com/developers, self-hosting → upgrade) and the release notes from the current to the target version. Follow whatever stepping the guide requires; if it requires stepping through intermediate minors, do each hop as its own backup/verify cycle.
+1. Since v1.23 Twenty supports jumping straight to the latest version, and the server runs upgrade migrations on start (no manual upgrade command; `yarn command:prod upgrade:status` only reports). v2.34+ needs Postgres ≥ 15 (twenty-db is 16). Checked against the v2.12–v2.43 release notes (2026-09-27): no REST record-shape changes; API-key calls are now subject to row-level permissions.
 2. Backup: `docker exec twenty-db pg_dump -U postgres default | gzip > /root/backups/twenty/pre-<v>-<ts>.sql.gz` (the nightly `/usr/local/bin/twenty-backup` exists too, but take a fresh one).
-3. Replace both `twentycrm/twenty@sha256:…` lines (server + worker) with the target tag's digest and update the `# vX.Y.Z` comments; `docker compose pull && docker compose up -d`. Watch `docker logs -f twenty-server`; run the upgrade command if the guide says to (`docker exec twenty-server yarn command:prod upgrade`).
-4. Verify the bridge: `cd /opt/twenty-mcp && sudo -u twenty-mcp node verify-shapes.mjs` (checks field shapes against the live OpenAPI), then list people/companies and create+delete a test note via MCP. Fix `tools.mjs` if shapes moved (commit + push to `Quotz/twenty-mcp`), `systemctl restart twenty-mcp`.
+3. Replace both `twentycrm/twenty@sha256:…` lines (server + worker) with the target tag's digest and update the `# vX.Y.Z` comments; `docker compose pull && docker compose up -d`. Watch `docker logs -f twenty-server`; migrations can take many minutes across dozens of minors.
+4. Verify the bridge read-only: `cd /opt/twenty-mcp && node /usr/local/lib/mcp-smoke.mjs http://127.0.0.1:8890/mcp twenty_whoami twenty_list_people twenty_list_companies twenty_list_notes`. (`verify-shapes.mjs` also checks write shapes but leaves "Verify Co"/"Verify Person" records behind; delete them afterwards.) Fix `tools.mjs` if shapes moved (commit + push to `Quotz/twenty-mcp`), `systemctl restart twenty-mcp`.
 5. Rollback: old digest + restore the dump (Twenty migrations are not reversible, so the dump is the rollback).
 
 ### NanoClaw itself — medium
