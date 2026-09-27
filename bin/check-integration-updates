@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""Weekly check: is anything on the VPS behind upstream? Informs only, never upgrades.
+
+Installed at /usr/local/bin/check-integration-updates, run by
+/etc/cron.d/integration-update-check (Sundays). Writes the report to
+/var/lib/integration-updates/report.txt and DMs it to the owner on Matrix.
+Apply updates with the /update-integrations skill in Claude Code.
+
+  check-integration-updates            check + DM
+  check-integration-updates --no-send  check + print only
+"""
+import json, re, subprocess, sys, urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+STATE = Path("/var/lib/integration-updates")
+ENV_FILE = Path("/opt/nanoclaw/.env")
+DM_ROOM = "!FSSf1hJiBiS655TB:matrix.815431624.xyz"  # canonical owner<->pero DM
+
+
+def sh(cmd, user=None, timeout=120):
+    if user:
+        cmd = ["sudo", "-u", user, "-H"] + cmd
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    return r.stdout.strip()
+
+
+def get_json(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "integration-update-check"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.load(r)
+
+
+def hub_repo(image):
+    name = image.split("@")[0]
+    if ":" in name.split("/")[-1]:
+        name = name.rsplit(":", 1)[0]
+    return name if "/" in name else f"library/{name}"
+
+
+def hub_digest(repo, tag, with_date=False):
+    t = get_json(f"https://hub.docker.com/v2/repositories/{repo}/tags/{tag}")
+    return (t["digest"], t["last_updated"][:10]) if with_date else t["digest"]
+
+
+def hub_tag_for(repo, digest, pattern):
+    """Newest tag matching `pattern` that points at `digest` (e.g. v2.43.0 for :latest)."""
+    for t in get_json(f"https://hub.docker.com/v2/repositories/{repo}/tags/?page_size=100&ordering=last_updated")["results"]:
+        if t.get("digest") == digest and re.fullmatch(pattern, t["name"]):
+            return t["name"]
+    return None
+
+
+def pinned_digest(compose, repo):
+    m = re.search(rf"{re.escape(repo)}@(sha256:[a-f0-9]+)(?:\s*#\s*(\S+))?", Path(compose).read_text())
+    return (m.group(1), m.group(2)) if m else (None, None)
+
+
+# Each check returns (name, current, latest, risk) when behind, or (name, current, None, None) when current.
+
+def check_pinned(name, compose, repo, tag_pattern, risk):
+    pinned, label = pinned_digest(compose, repo)
+    latest, built = hub_digest(repo, "latest", with_date=True)
+    cur = label or hub_tag_for(repo, pinned, tag_pattern) or pinned[:19]
+    if pinned == latest:
+        return name, cur, None, None
+    return name, cur, hub_tag_for(repo, latest, tag_pattern) or f"latest (built {built})", risk
+
+
+def check_onecli():
+    img = sh(["docker", "inspect", "onecli", "--format", "{{.Config.Image}}"])
+    cur = img.rsplit(":", 1)[-1]
+    latest = get_json("https://api.github.com/repos/onecli/onecli/releases/latest")["tag_name"].lstrip("v")
+    return "OneCLI gateway", cur, (latest if latest != cur else None), "medium: all credential injection"
+
+
+def check_hindsight():
+    out = sh(["uv", "tool", "list"], user="hindsight")
+    m = re.search(r"hindsight-api v(\S+)", out)
+    cur = m.group(1) if m else "?"
+    latest = get_json("https://pypi.org/pypi/hindsight-api/json")["info"]["version"]
+    return "Hindsight", cur, (latest if latest != cur else None), "low"
+
+
+def check_hermes():
+    out = sh(["bash", "-lc", "hermes --version"], user="hermes")
+    ver = re.search(r"(v[\d.]+)", out)
+    behind = re.search(r"(\d+) commits behind", out)
+    cur = ver.group(1) if ver else "?"
+    return "Hermes (trial)", cur, (f"{behind.group(1)} commits newer" if behind else None), "low: trial bot"
+
+
+def check_nanoclaw():
+    d = "/opt/nanoclaw"
+    sh(["git", "-C", d, "fetch", "-q", "upstream"], user="nanoclaw")
+    n = sh(["git", "-C", d, "rev-list", "--count", "HEAD..upstream/main"], user="nanoclaw")
+    cur = json.loads(sh(["git", "-C", d, "show", "HEAD:package.json"], user="nanoclaw"))["version"]
+    new = json.loads(sh(["git", "-C", d, "show", "upstream/main:package.json"], user="nanoclaw"))["version"]
+    if n in ("", "0"):
+        return "NanoClaw", cur, None, None
+    return "NanoClaw", cur, f"{new} ({n} upstream commits)", "medium: use /migrate-nanoclaw"
+
+
+def check_bridge(name, d, user):
+    sh(["git", "-C", d, "fetch", "-q"], user=user)
+    n = sh(["git", "-C", d, "rev-list", "--count", "HEAD..@{u}"], user=user)
+    raw = subprocess.run(["npm", "outdated", "--json"], cwd=d, capture_output=True, text=True).stdout
+    deps = [f"{k} {v['current']}→{v['wanted']}" for k, v in (json.loads(raw or "{}")).items()
+            if v.get("current") != v.get("wanted")]
+    parts = ([f"{n} new commits"] if n not in ("", "0") else []) + deps
+    return name, "installed", ("; ".join(parts) or None), "low: in-range deps"
+
+
+def check_floating_images():
+    """Running containers on a floating Docker Hub tag (e.g. caddy:2-alpine) whose tag moved."""
+    rows = []
+    names = sh(["docker", "ps", "--format", "{{.Names}}"]).split()
+    for c in names:
+        img = sh(["docker", "inspect", c, "--format", "{{.Config.Image}}"])
+        if "@" in img or ":" not in img or img.startswith(("ghcr.io/", "nanoclaw-", "snow-forecast")):
+            continue
+        repo, tag = hub_repo(img), img.rsplit(":", 1)[1]
+        local = sh(["docker", "image", "inspect", img, "--format", "{{join .RepoDigests \" \"}}"])
+        try:
+            remote = hub_digest(repo, tag)
+        except Exception:
+            continue
+        if remote not in local:
+            rows.append((f"{c} ({img})", "older build", "newer build of same tag", "low: compose pull"))
+    return rows
+
+
+def check_os():
+    upg = [l for l in sh(["apt", "list", "--upgradable"]).splitlines() if "/" in l]
+    reboot = Path("/var/run/reboot-required").exists()
+    if not upg and not reboot:
+        return "Ubuntu packages", "current", None, None
+    msg = f"{len(upg)} packages upgradable" + ("; REBOOT REQUIRED" if reboot else "")
+    return "Ubuntu packages", "", msg, "low (security auto-applied)"
+
+
+def main():
+    checks = [
+        lambda: check_pinned("Twenty CRM", "/opt/twenty/docker-compose.yml", "twentycrm/twenty",
+                             r"v\d+\.\d+\.\d+", "high: bridge field shapes"),
+        lambda: check_pinned("Taskosaur", "/opt/taskosaur/docker-compose.yml", "taskosaur/taskosaur",
+                             r"0\.1\.0-[0-9a-f]+", "high: bridge DTOs"),
+        check_onecli, check_hindsight, check_nanoclaw, check_hermes,
+        lambda: check_bridge("twenty-mcp bridge", "/opt/twenty-mcp", "twenty-mcp"),
+        lambda: check_bridge("taskosaur-mcp bridge", "/opt/taskosaur-mcp", "taskosaur-mcp"),
+        check_os,
+    ]
+    behind, current, errors = [], [], []
+    for c in checks:
+        try:
+            name, cur, new, risk = c()
+            (behind if new else current).append((name, cur, new, risk))
+        except Exception as e:
+            errors.append(f"{getattr(c, '__name__', 'check')}: {e}")
+    try:
+        behind += check_floating_images()
+    except Exception as e:
+        errors.append(f"floating images: {e}")
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    lines = [f"🔄 Weekly update check ({today})"]
+    if behind:
+        lines.append("Updates available:")
+        lines += [f"• {n}: {c} → {l}  [{r}]" if c else f"• {n}: {l}  [{r}]" for n, c, l, r in behind]
+    else:
+        lines.append("Everything is up to date.")
+    if current:
+        lines.append("Up to date: " + ", ".join(f"{n} {c}" for n, c, _, _ in current))
+    if errors:
+        lines.append("Check errors: " + "; ".join(errors))
+    if behind:
+        lines.append("To update: open Claude Code in the nanoclaw repo and run /update-integrations")
+    report = "\n".join(lines)
+
+    STATE.mkdir(parents=True, exist_ok=True)
+    (STATE / "report.txt").write_text(report + "\n")
+    (STATE / "report.json").write_text(json.dumps(
+        {"date": today, "errors": errors,
+         "behind": [dict(zip(("name", "current", "latest", "risk"), b)) for b in behind]}, indent=2))
+    print(report)
+    if "--no-send" not in sys.argv:
+        send_matrix(report)
+
+
+def send_matrix(body):
+    env = dict(l.split("=", 1) for l in ENV_FILE.read_text().splitlines() if "=" in l and not l.startswith("#"))
+    token = env.get("MATRIX_ACCESS_TOKEN", "").strip("\"'")
+    base = env.get("MATRIX_BASE_URL", "").strip("\"'").rstrip("/")
+    room = urllib.request.quote(DM_ROOM, safe="")
+    txn = datetime.now().strftime("%s%f")
+    req = urllib.request.Request(
+        f"{base}/_matrix/client/v3/rooms/{room}/send/m.room.message/upd{txn}", method="PUT",
+        data=json.dumps({"msgtype": "m.text", "body": body}).encode(),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        print(f"matrix-send http={r.status}")
+
+
+if __name__ == "__main__":
+    main()
