@@ -29,6 +29,12 @@ smoke_twenty(){ (cd /opt/twenty-mcp && node /usr/local/lib/mcp-smoke.mjs http://
   twenty_list_people twenty_list_companies twenty_list_opportunities twenty_list_notes twenty_list_tasks); }
 smoke_taskosaur(){ (cd /opt/taskosaur-mcp && node /usr/local/lib/mcp-smoke.mjs http://127.0.0.1:8889/mcp whoami \
   list_projects list_tasks list_sprints list_task_statuses list_workspaces); }
+twenty_status(){ timeout -k 10 180 docker exec twenty-server yarn command:prod upgrade:status 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true; }
+# Twenty's entrypoint runs `upgrade` before the server listens, so once healthy the status is final.
+# twenty_bad <Summary block>: Behind/Failed anywhere (an empty block, i.e. command missing/changed, passes).
+twenty_bad(){ grep -qE 'Instance: (Behind|Failed)| [1-9][0-9]* (behind|failed)' <<<"$1"; }
+# Save logs before a rollback recreates the containers: grab <dir> <container>:<lines>...
+grab(){ local d=$1 c; shift; mkdir -p "$d"; for c in "$@"; do docker logs --tail "${c#*:}" "${c%%:*}" >"$d/${c%%:*}.log" 2>&1; done; }
 
 if [ $DRY -eq 1 ]; then /usr/local/bin/check-integration-updates --no-send; exit; fi
 
@@ -105,6 +111,11 @@ t_pin=$(grep -oP 'taskosaur/taskosaur@\Ksha256:[a-f0-9]+' $TC | head -1); t_new=
 w_pin=$(grep -oP 'twentycrm/twenty@\Ksha256:[a-f0-9]+' $WC | head -1); w_new=$(hub twentycrm/twenty latest)
 t_up=0; [ -n "$t_new" ] && [ "$t_pin" != "$t_new" ] && t_up=1
 w_up=0; [ -n "$w_new" ] && [ "$w_pin" != "$w_new" ] && w_up=1
+# A Twenty digest that failed + rolled back before is not retried; a new upstream digest clears this.
+WF=/var/lib/ops/twenty-failed-digest   # "<digest> <tag> <date> <log dir>"
+if [ $w_up -eq 1 ] && [ -s $WF ] && read -r f_dig f_tag f_date f_logs <$WF && [ "$f_dig" = "$w_new" ]; then
+  iss=$(sed -nE 's|^(twentyhq/twenty)#([0-9]+).*|https://github.com/\1/issues/\2|p' /etc/ops/watched-issues 2>/dev/null | tr '\n' ' ')
+  w_up=0; note "⏭ Twenty $f_tag skipped: same version failed on $f_date, see $f_logs${iss:+ (watching ${iss% })}"; fi
 if [ ${#BROKEN[@]} -eq 0 ] && [ $((t_up + w_up)) -gt 0 ]; then
   systemctl stop nanoclaw
 
@@ -114,12 +125,13 @@ if [ ${#BROKEN[@]} -eq 0 ] && [ $((t_up + w_up)) -gt 0 ]; then
     dc /opt/taskosaur up -d app >/dev/null 2>&1
     if wait_healthy taskosaur-app 600 && smoke_taskosaur >/dev/null; then note "✅ Taskosaur → ${tag:-$t_new}"
     else
+      D=${BK%/}/taskosaur-failed; grab "$D" taskosaur-app:2000
       cp /tmp/taskosaur-compose.bak $TC; dc /opt/taskosaur stop app >/dev/null 2>&1
       docker exec taskosaur-postgres psql -U taskosaur -d postgres -qc 'DROP DATABASE taskosaur WITH (FORCE)' -c 'CREATE DATABASE taskosaur OWNER taskosaur'
       zcat "$BK/taskosaur-db.sql.gz" | docker exec -i taskosaur-postgres psql -U taskosaur -d taskosaur -q >/dev/null
       dc /opt/taskosaur up -d app >/dev/null 2>&1
-      if wait_healthy taskosaur-app 600 && smoke_taskosaur >/dev/null; then note "↩️ Taskosaur ${tag:-latest} failed verification, rolled back (DB restored)"
-      else broken "Taskosaur broken after rollback"; fi
+      if wait_healthy taskosaur-app 600 && smoke_taskosaur >/dev/null; then note "↩️ Taskosaur ${tag:-latest} failed verification, rolled back (DB restored). Logs: $D"
+      else broken "Taskosaur broken after rollback (failed upgrade logs: $D)"; fi
     fi
   fi
 
@@ -131,19 +143,26 @@ if [ ${#BROKEN[@]} -eq 0 ] && [ $((t_up + w_up)) -gt 0 ]; then
       cp $WC /tmp/twenty-compose.bak
       sed -i "s|twentycrm/twenty@$w_pin.*|twentycrm/twenty@$w_new  # ${tag:-latest} (auto-updated $(date -u +%F), previous $w_pin ${cur:-})|" $WC
       dc /opt/twenty up -d >/dev/null 2>&1
-      # Upgrade migrations run on server start; many minors can take a while.
-      if wait_healthy twenty-server 1500 && wait_http https://twenty.815431624.xyz/healthz 60 && smoke_twenty >/dev/null; then
-        note "✅ Twenty ${cur:-} → ${tag:-$w_new}"
+      # Upgrade migrations run in the entrypoint before the server listens; many minors can take a while.
+      # A failed workspace upgrade still starts the server healthy on a half-migrated DB, so upgrade:status gates too.
+      st=
+      if wait_healthy twenty-server 1500 && st=$(twenty_status | sed -n '/^Summary/,/^$/p') && ! twenty_bad "$st" \
+         && wait_http https://twenty.815431624.xyz/healthz 60 && smoke_twenty >/dev/null; then
+        note "✅ Twenty ${cur:-} → ${tag:-$w_new}"; rm -f $WF
       else
-        err=$(smoke_twenty 2>&1 | tail -1)
+        if twenty_bad "$st"; then err="upgrade:status $(grep -E 'Workspaces:|Instance:|at:' <<<"$st" | tr -s ' ' | tr '\n' ' ')"
+        else err=$(smoke_twenty 2>&1 | tail -1); fi
+        D=${BK%/}/twenty-failed; echo "$w_new ${tag:-latest} $(date +%F) $D" >$WF
+        grab "$D" twenty-server:2000 twenty-worker:500; twenty_status >"$D/upgrade-status.txt"
+        docker logs twenty-server 2>&1 | grep -E 'Upgrade (summary|failed)|Warning:|ERROR|Successfully migrated' >"$D/twenty-server-upgrade.log"
         cp /tmp/twenty-compose.bak $WC; dc /opt/twenty stop server worker >/dev/null 2>&1
         docker exec twenty-db psql -U postgres -qc 'DROP DATABASE "default" WITH (FORCE)' -c 'CREATE DATABASE "default"'
         zcat "$BK/twenty-db.sql.gz" | docker exec -i twenty-db psql -U postgres -d default -q >/dev/null
         docker exec twenty-redis redis-cli FLUSHALL >/dev/null   # drop the newer version's cache
         dc /opt/twenty up -d >/dev/null 2>&1
         if wait_healthy twenty-server 900 && smoke_twenty >/dev/null; then
-          note "↩️ Twenty ${tag:-latest} failed verification, rolled back to ${cur:-previous} (DB restored). Reason: ${err:-server unhealthy}"
-        else broken "Twenty broken after rollback to ${cur:-previous}"; fi
+          note "↩️ Twenty ${tag:-latest} failed verification, rolled back to ${cur:-previous} (DB restored). Reason: ${err:-server unhealthy}. Logs: $D"
+        else broken "Twenty broken after rollback to ${cur:-previous} (failed upgrade logs: $D)"; fi
       fi
     fi
   fi

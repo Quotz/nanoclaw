@@ -11,13 +11,19 @@ Nothing in NanoClaw's source depends on it.
 | `ops-claude` + `ops-claude-prompt.md` | `/usr/local/bin`, `/usr/local/lib` | headless Claude Code as root with a restricted tool list, runbook = `.claude/skills/update-integrations/SKILL.md` |
 | `check-integration-updates` (`../`) | `/usr/local/bin` | report only; used by auto-update for the "still needs you" list |
 | `matrix-dm` | `/usr/local/bin` | sends a DM to the owner as @pero |
+| `issue-watch` | `/usr/local/bin`, list in `/etc/ops/watched-issues` | daily 09:00. DMs when a watched GitHub issue (`owner/repo#num` per line) is closed/reopened or gets a comment |
 | `mcp-smoke.mjs` | `/usr/local/lib` | read-only MCP bridge smoke test |
 | `vps-ops.cron`, `logrotate.conf` | `/etc/cron.d/vps-ops`, `/etc/logrotate.d/vps-ops` | |
 
 Auto-updated: Claude Code, MCP bridges (in-range deps + their git repos), Hindsight, Hermes,
 floating image tags, Taskosaur, Twenty, OneCLI within its current major, Ubuntu packages.
 Reported but not automatic: NanoClaw itself (`/migrate-nanoclaw`) and OneCLI major versions
-(2.x is a redeploy: see the update-integrations skill).
+(2.x is a redeploy: see the update-integrations skill). A Twenty digest that failed and was rolled back
+is recorded in `/var/lib/ops/twenty-failed-digest` and skipped until upstream publishes a new one (delete it to retry).
+
+After any `git pull` (and build) of NanoClaw on the VPS, stamp the upgrade marker before restarting:
+`cd /opt/nanoclaw && sudo -u nanoclaw pnpm exec tsx scripts/upgrade-state.ts set`. Otherwise the upgrade tripwire
+exits on every start and the circuit breaker crash-loops it while systemd still says active (`nanoclaw:crashloop`).
 
 Off-site copy: the Mac runs `laptop-pull-backups.sh` (installed as `~/.local/bin/vps-pull-backups`,
 launchd `com.nanoclaw.vps-backup-pull`, daily 12:00 and at login) into `~/VPS-backups`.
@@ -39,8 +45,9 @@ Without it, incidents are DMed to you instead.
 ## Deploy
 
 ```bash
-scp bin/ops/{matrix-dm,backup-all,health-check,auto-update,ops-claude} bin/check-integration-updates root@46.225.98.16:/usr/local/bin/
+scp bin/ops/{matrix-dm,backup-all,health-check,auto-update,ops-claude,issue-watch} bin/check-integration-updates root@46.225.98.16:/usr/local/bin/
 scp bin/ops/{ops-claude-prompt.md,mcp-smoke.mjs} root@46.225.98.16:/usr/local/lib/
 scp bin/ops/vps-ops.cron root@46.225.98.16:/etc/cron.d/vps-ops
 scp bin/ops/logrotate.conf root@46.225.98.16:/etc/logrotate.d/vps-ops
+ssh root@46.225.98.16 'mkdir -p /etc/ops; grep -qx "twentyhq/twenty#26798" /etc/ops/watched-issues 2>/dev/null || echo "twentyhq/twenty#26798" >> /etc/ops/watched-issues'
 ```

@@ -23,8 +23,16 @@ fresh(){ local f; f=$(find "$1" -maxdepth 1 -mindepth 1 -mmin -1800 | head -1); 
 disk(){ local p; p=$(df --output=pcent / | tail -1 | tr -dc 0-9); [ "$p" -lt 90 ] || { echo "root disk ${p}% full"; return 1; }; }
 hermes(){ local uid; uid=$(id -u hermes) || return 0
           sudo -u hermes XDG_RUNTIME_DIR=/run/user/$uid systemctl --user is-active --quiet hermes-gateway || { echo "hermes-gateway down"; return 1; }; }
+# NanoClaw stays "active" while its circuit breaker sleeps between crashes (up to 15 min; e.g. the upgrade tripwire
+# exits 1 on every start). The breaker file is rewritten on each start (attempt 1 = normal run) and removed on clean
+# shutdown, so attempt >= 3 (= "delaying startup") written in the last 20 min means a crash loop.
+crashloop(){ local f=/opt/nanoclaw/data/circuit-breaker.json a why=; a=$(grep -oP '"attempt":\s*\K\d+' "$f" 2>/dev/null) || return 0
+  [ "$a" -ge 3 ] && [ -n "$(find "$f" -mmin -20)" ] || return 0
+  tail -50 /opt/nanoclaw/logs/nanoclaw.error.log | grep -q 'Upgrade tripwire' && why=" (upgrade tripwire: stamp the marker, see bin/ops/README.md)"
+  echo "crash loop, circuit breaker attempt $a$why"; return 1; }
 
 for u in nanoclaw hindsight-api twenty-mcp taskosaur-mcp docker; do check "unit:$u" unit "$u"; done
+check nanoclaw:crashloop crashloop
 for c in onecli onecli-postgres-1 twenty-server twenty-worker twenty-db twenty-redis taskosaur-app taskosaur-postgres \
          taskosaur-redis dendrite matrix-postgres edge-caddy; do check "ctr:$c" ctr "$c"; done
 check bridge:twenty    bridge http://127.0.0.1:8890/health

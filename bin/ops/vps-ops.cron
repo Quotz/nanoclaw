@@ -5,3 +5,4 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 */10 * * * * root /usr/local/bin/health-check >> /var/log/health-check.log 2>&1
 0 4 * * *    root /usr/local/bin/backup-all >> /var/log/backup-all.log 2>&1
 0 3 * * 0    root /usr/local/bin/auto-update >> /var/log/auto-update.log 2>&1
+0 9 * * *    root /usr/local/bin/issue-watch >> /var/log/issue-watch.log 2>&1
