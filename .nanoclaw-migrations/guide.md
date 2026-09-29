@@ -1,9 +1,14 @@
 # NanoClaw Migration Guide
 
-Base: fork of nanocoai/nanoclaw at 2.0.64, 20 custom commits. Target: upstream/main (2.3.0).
+Base: fork of nanocoai/nanoclaw at 2.0.64, 20 custom commits. Target: upstream/main (2.3.0), then v2.4.0
+(branch migrate-2.4 = migrate-2.3.0 merged with tag v2.4.0; the merge was conflict-free).
 Goal: shrink the fork. Only what is listed under Keep is carried over.
 
 ## Applied Skills (reapply on the new base, idempotent)
+- add-onecli (2.4.0+: the OneCLI gateway is no longer built in; the host refuses to start without a registered
+  gateway). A manual merge must materialize it: `installGateway('onecli', root, {mode:'refresh', stamp:false})`
+  from setup/gateways/install.ts (what /update-nanoclaw does) -> payload files, `import './onecli.js'` in
+  src/gateway-providers/installed.ts, `@onecli-sh/sdk` dep.
 - add-matrix (channels branch) — the only channel in use
 - add-gmail-tool — gmail-mcp in the agent image, OneCLI-managed OAuth
 - Custom host skills, copy verbatim from the old tree: add-taskosaur, add-twenty, add-vault, add-hindsight
@@ -41,6 +46,13 @@ Runbook skill: `/update-integrations`. Replaced the old Monday twenty/taskosaur 
 - Group folder `_ping-test` renamed to `pero` (2.3.0 folder grammar). Group skills live in
   `data/v2-sessions/<group-id>/.claude-shared/skills/`. Legacy instruction files are in `groups/pero/.legacy/`.
 - Backups: `/root/backups/nanoclaw-pre-2.3.0-2026-09-19/` on the VPS. Rollback tag: `pre-migrate-2.0.64`.
+
+## Deploy notes (2.3.0 -> 2.4.0, prepared 2026-09-29, not yet deployed)
+- VPS was on upstream main 7902716b (post-2.3.0), so only 30 upstream commits are new; no schema migrations.
+- Agent image changes (Claude Code 2.1.280, Agent SDK 0.3.280): rebuild with ./container/build.sh.
+  Groups with no model now default to Opus 5.5 (Claude Code default); pin with NANOCLAW_DEFAULT_MODEL if unwanted.
+- Add `NANOCLAW_GATEWAY_PROVIDER=onecli` to the VPS .env (optional with one gateway, recommended).
+- Stamp the upgrade marker before restart (bin/ops/README.md).
 
 ## Dropped on purpose (do not re-port)
 - Hindsight auto recall/retain hook + idle-reset (f6080af2, bd00e949, 479a1b91): 7 s per turn. Hindsight stays as an on-demand MCP tool only.
