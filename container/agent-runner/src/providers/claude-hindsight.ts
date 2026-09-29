@@ -121,8 +121,10 @@ export function createHindsightHooks(
       const user = pendingUser;
       pendingUser = null;
       const assistant = plainText(i.last_assistant_message ?? '');
-      if (user && assistant && i.session_id && user.length + assistant.length >= MIN_RETAIN_CHARS) {
-        retain(target, i.session_id, `User: ${user}\n\nAssistant: ${assistant}`, log);
+      // A turn that replied only via send_message has no final text; the user's
+      // side still carries the facts, so retain it alone rather than drop it.
+      if (user && i.session_id && user.length + assistant.length >= MIN_RETAIN_CHARS) {
+        retain(target, i.session_id, assistant ? `User: ${user}\n\nAssistant: ${assistant}` : `User: ${user}`, log);
       }
       return { continue: true };
     },
