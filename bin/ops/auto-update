@@ -88,12 +88,32 @@ if [ -n "$old" ] && [ "$old" != "$new" ]; then
   fi
 fi
 
-# ── Hermes (trial bot, no rollback) ───────────────────────────────────────────
+# ── Hermes (trial bot) ────────────────────────────────────────────────────────
+# An update can leave the launcher refusing to start until `hermes pm repair` (2026-09-28), and the Hindsight
+# memory provider is a catalog plugin that must follow the catalog pin (its dependency prompt needs a TTY,
+# hence `script`). One restart after all that; verify, else git-reset to the previous commit and redo.
 if id hermes >/dev/null 2>&1; then
-  hv0=$(sudo -iu hermes hermes --version 2>/dev/null | head -1)
-  timeout 20m sudo -iu hermes env XDG_RUNTIME_DIR=/run/user/$(id -u hermes) hermes update --yes --backup </dev/null >/var/log/hermes-update.log 2>&1
-  hv1=$(sudo -iu hermes hermes --version 2>/dev/null | head -1)
-  [ "$hv0" != "$hv1" ] && note "✅ Hermes: ${hv1:-updated} (log /var/log/hermes-update.log)"
+  HA=/home/hermes/.hermes/hermes-agent HL=/var/log/hermes-update.log
+  hsu(){ timeout 20m sudo -iu hermes env XDG_RUNTIME_DIR=/run/user/$(id -u hermes) "$@"; }
+  hfix(){ local p st
+    grep -q 'pm repair' <<<"$(hsu hermes --version 2>&1 </dev/null)" && hsu hermes pm repair </dev/null >>$HL 2>&1
+    [ -d /home/hermes/.hermes/plugins/hindsight ] && p=update || p='install --enable'
+    printf 'y\ny\ny\n' | hsu script -qec "hermes plugins $p hindsight" /dev/null >>$HL 2>&1
+    systemctl --user -M hermes@ restart hermes-gateway; sleep 60
+    st=$(hsu hermes memory status 2>&1 </dev/null)   # not piped: pipefail + grep -q can SIGPIPE hermes
+    systemctl --user -M hermes@ is-active -q hermes-gateway && grep -q 'Status: *available' <<<"$st"; }
+  hv0=$(hsu hermes --version 2>/dev/null </dev/null | head -1); hh0=$(sudo -u hermes git -C $HA rev-parse HEAD)
+  hsu hermes update --yes --backup --no-gateway-restart </dev/null >$HL 2>&1
+  hv1=$(hsu hermes --version 2>&1 </dev/null | head -1)
+  if [ "$(sudo -u hermes git -C $HA rev-parse HEAD)" != "$hh0" ] || grep -q 'pm repair' <<<"$hv1" \
+     || [ ! -d /home/hermes/.hermes/plugins/hindsight ]; then
+    if hfix; then [ "$hv0" != "$hv1" ] && note "✅ Hermes: $(hsu hermes --version 2>/dev/null </dev/null | head -1) (log $HL)"
+    else
+      sudo -u hermes git -C $HA reset -q --hard "$hh0"
+      if hfix; then note "↩️ Hermes update failed to start, rolled back to ${hv0:-$hh0} (log $HL)"
+      else broken "Hermes down after rollback to ${hv0:-$hh0} (log $HL, pre-update zip in ~hermes/.hermes/backups)"; fi
+    fi
+  fi
 fi
 
 # ── Floating image tags (caddy, postgres/redis patch builds, dendrite:latest) ─
