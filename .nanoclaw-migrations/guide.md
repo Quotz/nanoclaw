@@ -47,7 +47,7 @@ Runbook skill: `/update-integrations`. Replaced the old Monday twenty/taskosaur 
   `data/v2-sessions/<group-id>/.claude-shared/skills/`. Legacy instruction files are in `groups/pero/.legacy/`.
 - Backups: `/root/backups/nanoclaw-pre-2.3.0-2026-09-19/` on the VPS. Rollback tag: `pre-migrate-2.0.64`.
 
-## Deploy notes (2.3.0 -> 2.4.0, prepared 2026-09-29, not yet deployed)
+## Deploy notes (2.3.0 -> 2.4.0, prepared 2026-09-29, deployed 2026-09-29 @ 898a9728; rollback: /root/backups/nanoclaw-pre-2.4.0-2026-09-29/rollback.sh)
 - VPS was on upstream main 7902716b (post-2.3.0), so only 30 upstream commits are new; no schema migrations.
 - Agent image changes (Claude Code 2.1.280, Agent SDK 0.3.280): rebuild with ./container/build.sh.
   Groups with no model now default to Opus 5.5 (Claude Code default); pin with NANOCLAW_DEFAULT_MODEL if unwanted.
