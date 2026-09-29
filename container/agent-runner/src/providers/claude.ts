@@ -18,6 +18,7 @@ import {
 // Transcript archiving and rotation are this provider's own concern: both
 // read the SDK's on-disk .jsonl, which no other provider has.
 import { archiveClaudeTranscript, rotateClaudeContinuation } from './claude-history.js';
+import { createHindsightHooks, resolveHindsightTarget } from './claude-hindsight.js';
 import { registerProvider } from './provider-registry.js';
 import type { AgentProvider, AgentQuery, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
 
@@ -249,6 +250,9 @@ export class ClaudeProvider implements AgentProvider {
     stream.push(input.prompt);
 
     const instructions = input.systemContext?.instructions;
+    // Fork patch: Hindsight auto recall/retain, on only when a `hindsight` MCP server is wired.
+    const hindsightTarget = resolveHindsightTarget(this.mcp.mcpServers);
+    const hindsight = hindsightTarget ? createHindsightHooks(hindsightTarget, log) : null;
 
     const sdkResult = sdkQuery({
       prompt: stream,
@@ -285,6 +289,9 @@ export class ClaudeProvider implements AgentProvider {
           PostToolUse: [{ hooks: [postToolUseHook] }],
           PostToolUseFailure: [{ hooks: [postToolUseHook] }],
           PreCompact: [{ hooks: [createPreCompactHook(this.assistantName)] }],
+          ...(hindsight
+            ? { UserPromptSubmit: [{ hooks: [hindsight.UserPromptSubmit] }], Stop: [{ hooks: [hindsight.Stop] }] }
+            : {}),
         },
       },
     });

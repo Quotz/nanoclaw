@@ -55,9 +55,27 @@ Runbook skill: `/update-integrations`. Replaced the old Monday twenty/taskosaur 
 - Stamp the upgrade marker before restart (bin/ops/README.md).
 
 ## Dropped on purpose (do not re-port)
-- Hindsight auto recall/retain hook + idle-reset (f6080af2, bd00e949, 479a1b91): 7 s per turn. Hindsight stays as an on-demand MCP tool only.
+- Old Hindsight auto recall/retain hook + idle-reset (f6080af2, bd00e949, 479a1b91): env-var config, 7 s per turn.
+  Superseded by the zero-config patch under "Hindsight auto-memory" below; do not re-port the old one.
 - patch_bridge self-mod action (3cb3b945, 52ea3e27): 0 uses in 90 days.
 - CLAUDE.local.md import in compose (9f77c011): replaced by upstream memory/ tree + /migrate-memory.
 - Scheduled-task fire-time stamp (42c847c8): already upstream (formatter uses process_after).
 - Per-container stdout/stderr log files (31742f35): debugging aid for the removed hook.
 - slack-formatting container skill: moved to channels branch, Slack not used.
+
+## Hindsight auto-memory (Claude provider, 2.4)
+Commit "feat(agent-runner): Hindsight auto recall/retain derived from the hindsight MCP server".
+New file container/agent-runner/src/providers/claude-hindsight.ts (+ .test.ts); claude.ts only imports it and,
+inside `query()`, spreads `UserPromptSubmit` + `Stop` hooks into `hooks:` when a target resolves.
+- On only when the group's MCP servers have `hindsight` = `{type:'http', url:'http://<host>:<port>/mcp/<bank>/'}`;
+  base URL and bank come from that URL. `HINDSIGHT_AUTO=0` in the container env turns it off.
+- Recall (UserPromptSubmit, prompt >= 15 chars, last 2000 chars, 5 s timeout):
+  POST `<base>/v1/default/banks/<bank>/memories/recall` `{query, budget:'mid', max_tokens:1500}` ->
+  `results[].text` + date (`occurred_start` or `mentioned_at`) as additionalContext in `<memory-context source="hindsight">`.
+- Retain (Stop, fire-and-forget, 10 s timeout, skipped when user+assistant < 40 chars):
+  POST `<base>/v1/default/banks/<bank>/memories` `{items:[{content:'User: ...\n\nAssistant: ...', context,
+  document_id:'nanoclaw-<SDK session_id>', update_mode:'append'}], async:true}` (field names checked against
+  Hindsight v0.10.1 `RetainRequest`/`MemoryItem`). The container has no NanoClaw session id, so the document
+  follows the Claude session and starts a new document when the transcript rotates.
+- Text is taken from the `<message>` bodies. Soft-fail everywhere; logs carry status codes only, never memory text.
+- Needs the NO_PROXY fork patch in src/container-runner.ts (same host list), or the gateway proxy resets these calls.
