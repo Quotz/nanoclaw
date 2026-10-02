@@ -127,6 +127,15 @@ describe('claude maybeRotateContinuation', () => {
     expect(provider.maybeRotateContinuation!('sess-old', CWD)).toContain('d');
   });
 
+  it('ages from the first timestamped entry when the first line has none', () => {
+    process.env.CLAUDE_TRANSCRIPT_ROTATE_BYTES = String(1024 * 1024);
+    process.env.CLAUDE_TRANSCRIPT_ROTATE_AGE_DAYS = '0.875';
+    const p = writeTranscript('sess-titled', 2048, new Date(Date.now() - 22 * 3600_000).toISOString());
+    fs.writeFileSync(p, JSON.stringify({ type: 'ai-title', title: 'x' }) + '\n' + fs.readFileSync(p, 'utf-8'));
+    const provider = createProvider('claude');
+    expect(provider.maybeRotateContinuation!('sess-titled', CWD)).toContain('d old');
+  });
+
   it('returns null for an unknown session id', () => {
     const provider = createProvider('claude');
     expect(provider.maybeRotateContinuation!('does-not-exist', CWD)).toBeNull();

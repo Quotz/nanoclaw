@@ -144,6 +144,12 @@ WORKDIR /workspace/group
 # passes --init instead (see hardeningArgs in src/container-runner.ts).
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/entrypoint.sh"]
 
+# Fork patch: start a fresh Claude session about once a day. Rotation is
+# checked at each container start (containers exit after 30 min idle); 21h
+# makes a session begun by the 07:00 daily loop roll over at the next
+# morning's first spawn instead of slipping a day.
+ENV CLAUDE_TRANSCRIPT_ROTATE_AGE_DAYS=0.875
+
 # ---- Provenance labels -------------------------------------------------------
 # LAST on purpose. An ARG invalidates every layer below it, so declaring these
 # up with the other build-args would make an otherwise-cached rebuild redo

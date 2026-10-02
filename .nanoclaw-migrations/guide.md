@@ -36,6 +36,13 @@ src/container-runner.ts `composeSessionSpec`: append `host.docker.internal,172.1
 to NO_PROXY/no_proxy in `contributedEnv`. Without it hindsight/taskosaur/twenty fail with ECONNRESET
 (verified on 2.3.0). Existing containers must be killed to pick it up.
 
+### Daily Claude session rotation (2026-10-02)
+`container/Dockerfile`: `ENV CLAUDE_TRANSCRIPT_ROTATE_AGE_DAYS=0.875` after ENTRYPOINT (fresh session
+roughly daily; upstream default is 14 days). `container/agent-runner/src/providers/claude-history.ts`:
+`readFirstTimestampedLine` scans the first 64 KB for an entry with a timestamp, because Claude Code
+often opens transcripts with an untimestamped `ai-title` line, which silently disabled age rotation.
+Test in `claude.rotate.test.ts`. The ENV needs `./container/build.sh`; the .ts is live on `git pull`.
+
 ### VPS ops (host scripts, not NanoClaw code)
 `bin/ops/` + `bin/check-integration-updates`: health check every 10 min, nightly backups, Sunday
 auto-update with rollback, headless Claude on-call. Deployed by scp, see `bin/ops/README.md`.

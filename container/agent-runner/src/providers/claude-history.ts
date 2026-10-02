@@ -227,7 +227,7 @@ export function rotateClaudeContinuation(
     const size = fs.statSync(transcriptPath).size;
     let firstLine = '';
     try {
-      firstLine = readFirstLine(transcriptPath);
+      firstLine = readFirstTimestampedLine(transcriptPath);
     } catch {
       // Size-only rotation must survive an unreadable first entry.
     }
@@ -299,12 +299,23 @@ function findContinuationFile(root: string, fileName: string): string | null {
   return null;
 }
 
-function readFirstLine(filePath: string): string {
+// Fork patch: Claude Code often opens a transcript with an `ai-title` entry
+// that carries no timestamp, which silently disabled age rotation. Use the
+// first entry in the head of the file that has one.
+function readFirstTimestampedLine(filePath: string): string {
   const fd = fs.openSync(filePath, 'r');
   try {
-    const buffer = Buffer.alloc(4096);
+    const buffer = Buffer.alloc(65536);
     const bytes = fs.readSync(fd, buffer, 0, buffer.length, 0);
-    return buffer.toString('utf-8', 0, bytes).split('\n', 1)[0];
+    const lines = buffer.toString('utf-8', 0, bytes).split('\n');
+    for (const line of lines) {
+      try {
+        if (JSON.parse(line)?.timestamp) return line;
+      } catch {
+        // Partial trailing line or non-JSON entry.
+      }
+    }
+    return lines[0];
   } finally {
     fs.closeSync(fd);
   }
