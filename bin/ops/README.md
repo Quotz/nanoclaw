@@ -24,6 +24,11 @@ is recorded in `/var/lib/ops/twenty-failed-digest` and skipped until upstream pu
 After any `git pull` (and build) of NanoClaw on the VPS, stamp the upgrade marker before restarting:
 `cd /opt/nanoclaw && sudo -u nanoclaw pnpm exec tsx scripts/upgrade-state.ts set`. Otherwise the upgrade tripwire
 exits on every start and the circuit breaker crash-loops it while systemd still says active (`nanoclaw:crashloop`).
+Safety net: `nanoclaw-stamp-if-safe` runs as `ExecStartPre` (drop-in `nanoclaw-stamp-if-safe.conf` →
+`/etc/systemd/system/nanoclaw.service.d/stamp-if-safe.conf`) and stamps by itself when HEAD is a clean, pushed
+descendant of the stamped commit that changes no host code (`src/`, package/lock files, tsconfig). Its decision is
+logged as `stamp-if-safe:` in `logs/nanoclaw.log`; `nanoclaw-stamp-if-safe --check` previews it.
+Upstream updates and host-code changes still need the manual stamp (after build + migrations).
 
 Off-site copy: the Mac runs `laptop-pull-backups.sh` (installed as `~/.local/bin/vps-pull-backups`,
 launchd `com.nanoclaw.vps-backup-pull`, daily 12:00 and at login) into `~/VPS-backups`.
@@ -45,7 +50,8 @@ Without it, incidents are DMed to you instead.
 ## Deploy
 
 ```bash
-scp bin/ops/{matrix-dm,backup-all,health-check,auto-update,ops-claude,issue-watch} bin/check-integration-updates root@46.225.98.16:/usr/local/bin/
+scp bin/ops/{matrix-dm,backup-all,health-check,auto-update,ops-claude,issue-watch,nanoclaw-stamp-if-safe} bin/check-integration-updates root@46.225.98.16:/usr/local/bin/
+scp bin/ops/nanoclaw-stamp-if-safe.conf root@46.225.98.16:/etc/systemd/system/nanoclaw.service.d/stamp-if-safe.conf  # then systemctl daemon-reload
 scp bin/ops/{ops-claude-prompt.md,mcp-smoke.mjs} root@46.225.98.16:/usr/local/lib/
 scp bin/ops/vps-ops.cron root@46.225.98.16:/etc/cron.d/vps-ops
 scp bin/ops/logrotate.conf root@46.225.98.16:/etc/logrotate.d/vps-ops

@@ -47,6 +47,9 @@ Test in `claude.rotate.test.ts`. The ENV needs `./container/build.sh`; the .ts i
 `bin/ops/` + `bin/check-integration-updates`: health check every 10 min, nightly backups, Sunday
 auto-update with rollback, headless Claude on-call. Deployed by scp, see `bin/ops/README.md`.
 Runbook skill: `/update-integrations`. Replaced the old Monday twenty/taskosaur checks (2026-09-27).
+`nanoclaw-stamp-if-safe` is a systemd `ExecStartPre` drop-in (2026-10-05, after two tripwire outages):
+it auto-stamps the upgrade marker only for clean, pushed, non-host commits. Re-install the drop-in on a
+new VPS; it does not replace the manual stamp after an upstream update.
 
 ## Deploy notes (2.0.64 -> 2.3.0, done 2026-09-19)
 - OneCLI gateway must be >= the versions.json pin; `~/.onecli/.env` needs `ONECLI_BIND_HOST=172.17.0.1` on this VPS.

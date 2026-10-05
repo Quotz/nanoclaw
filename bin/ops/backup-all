@@ -1,8 +1,7 @@
 #!/bin/bash
 # Nightly backup of everything the older per-app backups don't cover, into
 # /root/backups/nightly/<date>/. Existing jobs keep running: twenty-backup,
-# taskosaur-backup (root crontab), hindsight-backup. The laptop pulls
-# /root/backups + /root/.hermes/hindsight-backups off the box (see bin/ops/README.md).
+# taskosaur-backup (root crontab). The laptop pulls /root/backups off the box (see bin/ops/README.md).
 # Also run by auto-update before any upgrade. DMs only on failure.
 set -uo pipefail
 KEEP_DAYS=14
@@ -16,6 +15,11 @@ step onecli-db  bash -c 'docker exec onecli-postgres-1 pg_dumpall -U onecli | gz
 step matrix-db  bash -c 'docker exec matrix-postgres pg_dump -U dendrite dendrite | gzip > matrix-db.sql.gz'
 step twenty-db  bash -c 'docker exec twenty-db pg_dump -U postgres default | gzip > twenty-db.sql.gz'
 step taskosaur-db bash -c 'docker exec taskosaur-postgres pg_dump -U taskosaur taskosaur | gzip > taskosaur-db.sql.gz'
+# Hindsight (host Postgres, peer auth): live DB hindsight_voyage + the pre-Voyage archive DB hindsight.
+# Restore: systemctl stop hindsight-api; runuser -u postgres -- pg_restore -d <db> --clean --if-exists < <db>.dump
+hindsight_dump(){ local db; for db in hindsight_voyage hindsight; do
+  (cd / && runuser -u postgres -- pg_dump -Fc "$db") > "$DEST/$db.dump" && [ -s "$DEST/$db.dump" ] || return 1; done; }
+step hindsight-db hindsight_dump
 step nanoclaw-db python3 -c 'import sqlite3; s=sqlite3.connect("/opt/nanoclaw/data/v2.db"); d=sqlite3.connect("nanoclaw-v2.db"); s.backup(d); d.close()'
 
 # OneCLI app volume: holds the secret-encryption key and gateway CA (without it the DB dump is useless)
@@ -28,7 +32,7 @@ step configs bash -c 'tar -czf configs.tar.gz --ignore-failed-read --exclude=usr
   /home/nanoclaw/.onecli/.env /home/nanoclaw/.onecli/docker-compose.yml /home/nanoclaw/bin \
   /etc/cron.d /etc/systemd/system/nanoclaw.service /etc/systemd/system/nanoclaw.service.d \
   /etc/systemd/system/hindsight-api.service /etc/systemd/system/twenty-mcp.service /etc/systemd/system/taskosaur-mcp.service \
-  /etc/twenty-mcp /etc/taskosaur-mcp /etc/hindsight /usr/local/bin /usr/local/lib/mcp-smoke.mjs /root/.config/ops-claude \
+  /etc/twenty-mcp /etc/taskosaur-mcp /etc/hindsight /root/.config/hindsight-keys /usr/local/bin /usr/local/lib/mcp-smoke.mjs /root/.config/ops-claude \
   /home/hermes/.hermes/config.yaml /home/hermes/.hermes/.env /home/hermes/.hermes/SOUL.md /home/hermes/.hermes/hindsight 2>/dev/null; [ -s configs.tar.gz ]'
 
 chmod -R go-rwx "$DEST"

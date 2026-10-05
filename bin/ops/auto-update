@@ -44,7 +44,6 @@ if ! probe >/tmp/auto-update-probe 2>&1; then
 $(cat /tmp/auto-update-probe)"
   exit 1
 fi
-/root/.hermes/scripts/hindsight-backup.sh >> /var/log/hindsight-backup.log 2>&1
 if ! /usr/local/bin/backup-all; then dm "⏸ Sunday auto-update aborted: backup failed."; exit 1; fi
 BK=$(ls -1d /root/backups/nightly/*/ | tail -1)
 echo "backup: $BK"

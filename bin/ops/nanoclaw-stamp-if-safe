@@ -1,0 +1,27 @@
+#!/bin/bash
+# ExecStartPre of nanoclaw.service (runs as user nanoclaw before every start, see nanoclaw-stamp-if-safe.conf).
+# A deploy that moves HEAD without stamping data/upgrade-state.json makes the upgrade tripwire crash-loop
+# NanoClaw on the next restart, whatever triggers it (apt restarting docker, reboot): outages 09-28, 10-04.
+# Stamp automatically only when the host side cannot have changed since the stamped commit: HEAD descends
+# from it, is the pushed upstream, the tree is clean, and no host code/deps/version changed (container/,
+# docs, skills, bin/ are fine: agent-runner src is mounted live). Anything else is left to the tripwire.
+# Never blocks the start.   nanoclaw-stamp-if-safe [--check]   (--check: print the decision, don't stamp)
+set -uo pipefail
+cd "${NANOCLAW_DIR:-/opt/nanoclaw}" || exit 0
+say(){ echo "stamp-if-safe: $*"; }
+rec=$(sed -nE 's/.*"commit": *"([0-9a-f]+)".*/\1/p' data/upgrade-state.json 2>/dev/null)
+[ -n "$rec" ] || { say "no stamped commit in data/upgrade-state.json, leaving it to the tripwire"; exit 0; }
+head=$(git rev-parse HEAD 2>/dev/null) || exit 0
+[ "$rec" = "$head" ] && exit 0
+why=
+if ! git merge-base --is-ancestor "$rec" HEAD 2>/dev/null; then why="HEAD does not descend from stamped ${rec:0:8}"
+elif [ "$head" != "$(git rev-parse '@{u}' 2>/dev/null)" ]; then why="HEAD is not the pushed upstream"
+elif [ -n "$(git status --porcelain --untracked-files=no)" ]; then why="uncommitted changes"
+else
+  host=$(git diff --name-only "$rec" HEAD -- src package.json pnpm-lock.yaml pnpm-workspace.yaml 'tsconfig*.json' | head -5 | tr '\n' ' ')
+  [ -n "$host" ] && why="host files changed since ${rec:0:8}: $host"
+fi
+if [ -n "$why" ]; then say "not stamping ($why)"; exit 0; fi
+if [ "${1:-}" = --check ]; then say "would stamp ${head:0:8} (only non-host files changed since ${rec:0:8})"; exit 0; fi
+say "stamping ${head:0:8} (only non-host files changed since ${rec:0:8})"
+pnpm exec tsx scripts/upgrade-state.ts set "" auto-stamp

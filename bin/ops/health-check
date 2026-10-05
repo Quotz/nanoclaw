@@ -44,7 +44,7 @@ check web:matrix       http https://matrix.815431624.xyz/_matrix/client/versions
 check disk             disk
 [ $PROBE -eq 0 ] && check offsite-backup bash -c '[ -n "$(find /var/lib/ops/offsite-pulled -mmin -4320 2>/dev/null)" ] || { echo "laptop has not pulled backups for 3 days"; exit 1; }'
 check hermes           hermes
-for d in /root/backups/twenty /root/backups/taskosaur /root/backups/nightly /root/.hermes/hindsight-backups; do
+for d in /root/backups/twenty /root/backups/taskosaur /root/backups/nightly; do
   check "backup:${d##*/}" fresh "$d"; done
 
 if [ $PROBE -eq 1 ]; then
