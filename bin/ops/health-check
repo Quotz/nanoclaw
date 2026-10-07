@@ -33,7 +33,7 @@ crashloop(){ local f=/opt/nanoclaw/data/circuit-breaker.json a why=; a=$(grep -o
 
 for u in nanoclaw hindsight-api twenty-mcp taskosaur-mcp docker; do check "unit:$u" unit "$u"; done
 check nanoclaw:crashloop crashloop
-for c in onecli onecli-postgres-1 twenty-server twenty-worker twenty-db twenty-redis taskosaur-app taskosaur-postgres \
+for c in onecli-api onecli-web onecli-gateway onecli-postgres-1 twenty-server twenty-worker twenty-db twenty-redis taskosaur-app taskosaur-postgres \
          taskosaur-redis dendrite matrix-postgres edge-caddy; do check "ctr:$c" ctr "$c"; done
 check bridge:twenty    bridge http://127.0.0.1:8890/health
 check bridge:taskosaur bridge http://127.0.0.1:8889/health

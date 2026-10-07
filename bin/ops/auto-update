@@ -189,15 +189,19 @@ if [ ${#BROKEN[@]} -eq 0 ] && [ $((t_up + w_up)) -gt 0 ]; then
   systemctl start nanoclaw
 fi
 
-# ── OneCLI: newest release within the current major only ─────────────────────
+# ── OneCLI: newest release within the current major only (1.x single image) ──
+# 2.x (split onecli-api/-web/-gateway images, one-way DB migrations, egress guard from 2.8 that
+# can affect Hermes) is report-only until a 2.x routine with DB-restore rollback exists; the
+# "Still needs you" list shows pending versions.
 OE=/home/nanoclaw/.onecli/.env
 o_cur=$(grep -oP '^ONECLI_VERSION=\K\S+' $OE)
+case "$o_cur" in 1.*) ;; *) o_cur=;; esac
 o_new=$(curl -fsS -m 20 "https://api.github.com/repos/onecli/onecli/releases?per_page=100" | python3 -c '
 import sys,json; cur=sys.argv[1]; major=cur.split(".")[0]
 vs=[r["tag_name"].lstrip("v") for r in json.load(sys.stdin) if not r.get("prerelease")]
 vs=[v for v in vs if v.split(".")[0]==major and all(p.isdigit() for p in v.split("."))]
 print(max(vs, key=lambda v: tuple(map(int, v.split(".")))) if vs else cur)' "$o_cur")
-if [ ${#BROKEN[@]} -eq 0 ] && [ -n "$o_new" ] && [ "$o_new" != "$o_cur" ] && docker pull -q "ghcr.io/onecli/onecli:$o_new" >/dev/null 2>&1; then
+if [ ${#BROKEN[@]} -eq 0 ] && [ -n "$o_cur" ] && [ -n "$o_new" ] && [ "$o_new" != "$o_cur" ] && docker pull -q "ghcr.io/onecli/onecli:$o_new" >/dev/null 2>&1; then
   CA=/var/lib/docker/volumes/onecli_app-data/_data/gateway/ca.pem; cp $CA /tmp/onecli-ca.before
   sed -i "s/^ONECLI_VERSION=.*/ONECLI_VERSION=$o_new/" $OE
   dc /home/nanoclaw/.onecli up -d >/dev/null 2>&1

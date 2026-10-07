@@ -68,7 +68,9 @@ def check_pinned(name, compose, repo, tag_pattern, risk):
 
 
 def check_onecli():
-    img = sh(["docker", "inspect", "onecli", "--format", "{{.Config.Image}}"])
+    # 2.x runs split images (onecli-api/-web/-gateway); 1.x ran a single "onecli" container.
+    img = sh(["docker", "inspect", "onecli-api", "--format", "{{.Config.Image}}"]) or \
+        sh(["docker", "inspect", "onecli", "--format", "{{.Config.Image}}"])
     cur = img.rsplit(":", 1)[-1]
     latest = get_json("https://api.github.com/repos/onecli/onecli/releases/latest")["tag_name"].lstrip("v")
     return "OneCLI gateway", cur, (latest if latest != cur else None), "medium: all credential injection"

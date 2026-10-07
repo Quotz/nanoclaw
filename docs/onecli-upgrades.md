@@ -1,5 +1,25 @@
 # Upgrading the OneCLI gateway
 
+## This fork: OneCLI 2.x (VPS, 2026-10-07)
+
+The VPS runs OneCLI **2.7.0** (from 1.45.0, 2026-10-07). Ignore upstream's `onecli-gateway` pin (`.claude/skills/add-onecli/versions.json`, 1.4x) and any "roll back to the pin" advice here; the generic sections below describe 1.x.
+
+- **2.x is a redeploy with one-way DB migrations.** The single `ghcr.io/onecli/onecli` image is split into `onecli-migrations`/`-api`/`-web`/`-gateway` (also the container names; `onecli-postgres-1` and the `onecli_pgdata`/`onecli_app-data` volumes keep theirs). Use `docker/docker-compose.yml` from the release tag, never `install.sh`. The `migrations` one-shot applies Prisma migrations on `up`; they cannot be undone.
+- **`~nanoclaw/.onecli/.env` (mode 600) needs:** `SECRET_ENCRYPTION_KEY` copied verbatim from the 1.x `app-data/secret-encryption-key` file (or every secret is unreadable); new `BETTER_AUTH_SECRET` and `GATEWAY_INTERNAL_SECRET` (`head -c 32 /dev/urandom | base64`); `ONECLI_BIND_HOST=172.17.0.1`; `ONECLI_EXTERNAL_URL=http://172.17.0.1:10254`; `ONECLI_AGENT_PROXY_ADDRESS=host.docker.internal:10255` (the default `gateway:10255` is unreachable from NanoClaw containers); `COMPOSE_PROFILES=` empty (no hosted-agent runner with the docker socket).
+- **Undocumented:** the 2.x gateway runs as uid 100 and crash-loops on `reading CA private key: Permission denied` until `docker run --rm --user root -v onecli_app-data:/d postgres:18-alpine chown -R 100:101 /d`.
+- **API on `:10256/v1`, Bearer key required** (401 without; `/v1/health` stays open). NanoClaw `.env`: `ONECLI_URL=http://172.17.0.1:10256` + `ONECLI_API_KEY=oc_…`. Keep `/opt/nanoclaw/.env` at mode 600: that key is the OneCLI admin key. The 1.x `oc_` key survives the migration. Gateway `/v1/approvals/pending` needs the key too.
+- **First account adopts the 1.x data.** The migrated `users` table holds one placeholder (`local-admin` / `admin@localhost`); never delete it. Sign-up + sign-in on `:10256/auth/{sign-up,sign-in}/email` (header `Origin: http://172.17.0.1:10254`), then `GET /v1/auth/session`, moves it onto the new account. Done 2026-10-07; later registrations get their own empty org.
+- **Host CLI:** set `api-host` to `http://172.17.0.1:10256` in `~nanoclaw/.onecli/config.json`, then `onecli auth login --api-key oc_…` as `nanoclaw`. `agents set-secret-mode` / `set-secrets` return 410 Gone: secret modes are gone, and access is the published grants (`policy_rules_v2`). The CLAUDE.md "selective mode" gotcha is stale.
+- **Dashboard** (approval policies are UI-only): its JS calls `172.17.0.1:10256` directly, so use `ssh -D 1080 root@46.225.98.16`, point the browser at SOCKS5 `127.0.0.1:1080`, and open `http://172.17.0.1:10254`.
+- **Ops:** `auto-update` only applies 1.x bumps; 2.x releases show up as report-only in the weekly check. `health-check` watches `onecli-api`/`-web`/`-gateway`. Before going to 2.8+: its egress guard (`GATEWAY_ALLOW_PRIVATE_DESTINATIONS`) may refuse Hermes's private-host traffic (Hermes has no `no_proxy`).
+- **Rollback** (destructive; anything created in OneCLI after the upgrade is lost). The backup is `/root/backups/onecli-pre-2.7.0-2026-10-07/` (`db.sql.gz`, `app-data.tar.gz`, `onecli/{.env,docker-compose.yml,config.json}`, `nanoclaw.env`), and image `onecli:1.45.0` is kept. Steps:
+  1. Stop nanoclaw.
+  2. `docker compose down` with the 2.x file (no `-v`), then `docker volume rm onecli_pgdata`.
+  3. Restore the `onecli/` files.
+  4. `up -d --wait postgres`, then `zcat db.sql.gz | docker exec -i onecli-postgres-1 psql -q -U onecli -d postgres`.
+  5. Re-extract `app-data.tar.gz` into the volume and `chown -R 1000:1000` (the 1.45 gateway can't read a uid-100 `ca.key`).
+  6. `up -d`, copy `nanoclaw.env` back to `/opt/nanoclaw/.env`, start nanoclaw.
+
 NanoClaw talks to the OneCLI gateway (credential vault + egress proxy) through `@onecli-sh/sdk`. The gateway is an external component with its own release line, so NanoClaw pins the **sanctioned gateway version** in [`versions.json`](../versions.json) under `onecli-gateway`. When an update moves that pin, the gateway must be upgraded — this doc is the migration path. It is written to be handed to a coding agent verbatim: detect → upgrade → verify → rollback.
 
 There is deliberately **no runtime version check, and setup does not migrate the gateway for you**: the gateway is a separate out-of-band component, and the migrator is your coding agent running `/update-nanoclaw` — it diffs `versions.json` across the update and routes you here when the `onecli-gateway` pin moved. (Setup detects a pre-`/v1` gateway and points at this doc, but never upgrades it.) Run the steps below verbatim.
